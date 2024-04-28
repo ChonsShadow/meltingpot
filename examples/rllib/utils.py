@@ -26,7 +26,7 @@ from ray.rllib import algorithms
 from ray.rllib.env import multi_agent_env
 from ray.rllib.policy import sample_batch
 
-from ..gym import utils
+from my_gym import utils
 
 PLAYER_STR_FORMAT = 'player_{index}'
 

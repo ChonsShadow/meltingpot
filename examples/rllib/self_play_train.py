@@ -22,7 +22,7 @@ from ray import tune
 from ray.rllib.algorithms import ppo
 from ray.rllib.policy import policy
 
-from . import utils
+import utils
 
 
 def get_config(
@@ -155,7 +155,7 @@ def train(config, num_iterations=1):
 
 
 def main():
-  config = get_config()
+  config = get_config()  
   results = train(config, num_iterations=1)
   print(results)
   assert results.num_errors == 0

@@ -24,7 +24,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from . import utils
+import utils
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device(
     "cpu")
