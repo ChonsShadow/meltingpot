@@ -19,7 +19,7 @@ class MOAMlp(nn.Module):
     ``dict(conv=[<list of tuples of the form (layer size, kernel_size)>], ac=[<list of layer sizes>], moa=[<list of layer sizes>])``: to specify
         the amount and size of the layers in the shared convolutional Part, ActorCritc and MOA nets individually.
         If it is missing any of the keys (conv, ac or moa), a default .
-    
+
 
     .. note::
         If a key is not specified or an empty list is passed ``[]``, a linear network will be used.
@@ -28,7 +28,7 @@ class MOAMlp(nn.Module):
     :param net_arch: The specification of the networks.
         See above for details on its formatting.
     :param fc_activation_fn: The activation function to use for the fully connected layers.
-    :param conv_activation_fn: 
+    :param conv_activation_fn:
     :param device: PyTorch device.
     """
      def __init__(
@@ -46,19 +46,19 @@ class MOAMlp(nn.Module):
           conv_net_arch = net_arch.get("conv", None)
           ac_net_arch = net_arch.get("ac", None)
           moa_net_arch = net_arch.get("moa", None)
-          
+
           self.conv_layers, conv_out_dim = self.build_conv_layers(feature_dim,
                                                                   conv_net_arch,
                                                                   activation_fn=conv_activation_fn)
-          
+
           self.ac_fc_layers, self.ac_out_dim = self.build_fc_layers(conv_out_dim,
                                                                        ac_net_arch,
                                                                        activation_fn=ac_activation_fn)
-          
+
           self.moa_fc_layers, self.moa_out_dim = self.build_fc_layers(conv_out_dim,
                                                                        moa_net_arch,
                                                                        activation_fn=moa_activation_fn)
-          
+
 
      def build_conv_layers(self, in_size, net_arch, activation_fn=nn.ReLU):
           if net_arch == None:
@@ -74,7 +74,7 @@ class MOAMlp(nn.Module):
 
      def build_fc_layers(self, in_size, out_sizes, activation_fn=nn.Tanh):
           if out_sizes == None:
-               out_sizes = [6]
+               out_sizes = [32,32]
 
           fc_layers = []
           for out_size in out_sizes:
@@ -83,40 +83,38 @@ class MOAMlp(nn.Module):
                in_size = out_size
 
           return nn.Sequential(fc_layers), in_size
-     
+
      def forward(self, obs):
           conv_output = self.conv_layers(obs)
           return self.ac_fc_layers(conv_output), self.moa_fc_layers(conv_output)
-     
+
      def get_ac_out_dim (self):
           return self.ac_out_dim
-     
+
      def get_moa_out_dim (self):
           return self.moa_out_dim
-     
-          
-               
-         
-          
+
 
 class ACLSTM(nn.Module):
-     
+
      def __init__(self,
           in_size,
           cell_size,
-          num_lstm_layers,
-          action_space,
+          action_out_size = 32,
+          num_lstm_layers = 1,
           lstm_kwargs = {}) :
 
           super().__init__()
 
+          self.action_out_size = action_out_size
+
           self.lstm = nn.LSTM(in_size, cell_size, num_layers = num_lstm_layers, **lstm_kwargs)
-          self.logit_layer = nn.Linear(self.lstm.hidden_size, action_space)
+          self.logit_layer = nn.Linear(self.lstm.hidden_size, action_out_size)
           self.value_out = nn.Linear(self.lstm.hidden_size, 1)
 
 
      def forward (self, features, lstm_states, episode_starts):
-          
+
           lstm_output, new_lstm_states = self._process_sequence(features, lstm_states, episode_starts)
 
           logits = self.logit_layer(lstm_output)
@@ -175,9 +173,12 @@ class ACLSTM(nn.Module):
         lstm_output = th.flatten(th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1)
         return lstm_output, lstm_states
 
+     def get_act_out_size(self):
+          return self.action_out_size
+
 class MOALSTM(nn.Module):
-     
-     def __init__(self, num_features, num_logits, num_actions, cell_size, num_lstm_layers, lstm_kwargs) -> None:
+
+     def __init__(self, num_features, num_outputs, num_actions, cell_size, num_lstm_layers=1, lstm_kwargs={}) -> None:
           """
           :param num_features the size of the tensor containing the information regarding the observations,
                  can be the output size of other Layers in the NN or the the size of the original observation
@@ -192,13 +193,13 @@ class MOALSTM(nn.Module):
           super().__init__()
 
           self.cell_size = cell_size
-          self.in_size = num_features + num_logits + num_actions
+          self.in_size = num_features + num_outputs + num_actions
 
           self.lstm = nn.LSTM(self.in_size, cell_size, num_layers = num_lstm_layers, **lstm_kwargs)
-          self.logits = nn.Linear(self.lstm.hidden_size, num_logits)
+          self.logits = nn.Linear(self.lstm.hidden_size, num_outputs)
 
      def forward(self, features, lstm_states, episode_starts):
-          
+
           lstm_output, new_lstm_states = self._process_sequence(features, lstm_states, episode_starts)
 
           logits = self.logits(lstm_output)
@@ -255,5 +256,3 @@ class MOALSTM(nn.Module):
         # (sequence length, n_seq, lstm_out_dim) -> (batch_size, lstm_out_dim)
         lstm_output = th.flatten(th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1)
         return lstm_output, lstm_states
-          
-
