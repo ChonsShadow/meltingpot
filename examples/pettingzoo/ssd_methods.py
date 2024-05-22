@@ -1,4 +1,5 @@
 import torch as th
+import numpy as np
 
 def gather_nd(params, indices, batch_dim=1):
   """
@@ -31,7 +32,7 @@ def gather_nd(params, indices, batch_dim=1):
 
   # build gather indices
   # gather for each of the data point in this "batch"
-  batch_enumeration = torch.arange(batch_size).unsqueeze(1)
+  batch_enumeration = th.arange(batch_size).unsqueeze(1)
   gather_dims = [indices[:, :, i] for i in range(len(grid_dims))]
   gather_dims.insert(0, batch_enumeration)
   gathered = params[gather_dims]
