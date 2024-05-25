@@ -79,6 +79,7 @@ class MOAPolicy(ActorCriticPolicy):
         self.prev_actions = []
         self.div_measure = div_measure
         self.influence_reward = None
+        self.prev_act_logits = None
 
         super.__init__(
             observation_space,
@@ -194,7 +195,7 @@ class MOAPolicy(ActorCriticPolicy):
 
      def forward(self, obs, own_acts, other_agents_acts, lstm_states: RNNStates,
                  episode_starts, deterministic,
-                 prev_obs, prev_acts, prev_episode_starts):
+                 prev_obs, prev_acts, prev_episode_starts, visibility):
         """
         Forward pass in all the networks (actor, critic and moa)
 
@@ -205,16 +206,22 @@ class MOAPolicy(ActorCriticPolicy):
         :param deterministic: Whether to sample or use deterministic actions
         :return: action, value and log probability of the action
         """
+        #!!!!!!!!!!!!!!!!!!!!!!!!!! MOA hier ?????????????????????????????????????????????
+        """
+        lstm states spielen in sb3-contrib nur hier eine Rolle. Wenn nicht immer (?)
+        sollte MOA hier genutzt werden (ist das hier nicht auch Teil des Trainings, obwohl
+        train_mode false ist??)
+        """
         features = self.extract_features(obs)
 
         latent_ac, latent_moa = self.mlp_extractor.forward(features)
-        latent_pi, latent_vf, new_ac_lstm_states = self.ac_lstm.forward(latent_ac,
+        latent_pi, value, new_ac_lstm_states = self.ac_lstm.forward(latent_ac,
                                                                         lstm_states.ac,
                                                                         episode_starts)
 
         actions = th.cat([other_agents_acts, own_acts])
         flattened_acts = th.flatten(actions)
-        moa_features = th.cat([features, flattened_acts])
+        moa_features = th.cat([latent_moa, flattened_acts])
         action_pred, new_moa_lstm_states = self.moa_lstm.forward(moa_features,
                                                                  lstm_states.moa,
                                                                  episode_starts)
@@ -224,7 +231,16 @@ class MOAPolicy(ActorCriticPolicy):
 
         counterfacts = th.reshape(counterfacts, [-1, counterfacts.shape(-2), counterfacts.shape(-1)])
 
-        self.prev_actions.append(own_acts)
+        self.calc_influence_reward(self.prev_act_logits, counterfacts, visibility)
+
+        self.prev_actions = own_acts
+        self.prev_act_logits = action_pred
+
+        action_dist = self._get_action_dist_from_latent(latent_pi)
+        actions = action_dist.get_actions(deterministic=deterministic)
+        log_prob = action_dist.log_prob(actions)
+
+        return actions, value, log_prob, RNNStates(new_ac_lstm_states, new_moa_lstm_states)
 
 
 
@@ -303,3 +319,58 @@ class MOAPolicy(ActorCriticPolicy):
                                                 keepdim = True)
 
          return marginal_probs
+
+
+     def predict_values(
+             self,
+             obs: th.Tensor,
+             lstm_states: Tuple[th.Tensor, th.Tensor],
+             episode_starts: th.Tensor
+             ) -> th.Tensor:
+          """
+        Get the estimated values according to the current policy given the observations.
+
+        :param obs: Observation.
+        :param lstm_states: The last hidden and memory states for the LSTM.
+        :param episode_starts: Whether the observations correspond to new episodes
+            or not (we reset the lstm states in that case).
+        :return: the estimated values.
+        """
+          features = self.extract_features(obs)
+          latent_ac, _ = self.mlp_extractor.forward(features)
+          _, value, _ = self.ac_lstm.forward(latent_ac, lstm_states,
+                                             episode_starts)
+
+          return value
+
+     def evaluate_actions(self, obs, actions, lstm_states, episode_starts):
+         """
+        Evaluate actions according to the current policy,
+        given the observations.
+
+        :param obs: Observation.
+        :param actions: !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!probably only own actions!!!!!!
+        :param lstm_states: The last hidden and memory states for the LSTM.
+        :param episode_starts: Whether the observations correspond to new episodes
+            or not (we reset the lstm states in that case).
+        :return: estimated value, log likelihood of taking those actions
+            and entropy of the action distribution.
+        """
+         # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! MOA hier ??????????????????????????????????????????????
+         """
+         zwischen MOA und AC besteht über die conv layer hinaus, keine verbindung
+         daher sollte der MOA-spezifische Teil eher während des Trainings laufen
+         wenn nicht immer (?)
+         """
+         features = self.extract_features(obs)
+                    #?????????
+         latent_ac, latent_moa = self.mlp_extractor.forward(features)
+         latent_pi, values, _ = self.ac_lstm.forward(latent_ac,
+                                                    lstm_states.ac,
+                                                    episode_starts)
+
+         distribution = self._get_action_dist_from_latent(latent_pi)
+
+         log_prob = distribution.log_prob(actions)
+
+         return values, log_prob, distribution.entropy()
