@@ -252,10 +252,8 @@ class MOAPolicy(ActorCriticPolicy):
         :param counterfactual_logits: The counterfactual action logits for actions made by other
         agents at t.
         """
-        # Ich kann nur vermuten dass das input dict aus ssd alle vergangenen Actionen des Agenten sichert
-        # anders ergeben für mich diese codezeilen keinen Sinn (ssd-games MOAModel, 235-237)
-        # Korrektur: die Aktionen sind von t-1, warum dennoch die rede von mehreren
-        # Aktionen ist, verstehe ich dennoch nicht (ssd-games MOAModel, 275-282)
+        # prev actions sollte basierend auf den Kommentaren in ssd die Aktionen des letzten
+        # steps enthalten
         prev_agent_actions = self.prev_actions
         softmax = th.nn.Softmax()
 
@@ -321,6 +319,8 @@ class MOAPolicy(ActorCriticPolicy):
          return marginal_probs
 
 
+     # TODO: probably should add something like a predict moa Method, for calculating
+     # the influence reward!
      def predict_values(
              self,
              obs: th.Tensor,
@@ -374,3 +374,5 @@ class MOAPolicy(ActorCriticPolicy):
          log_prob = distribution.log_prob(actions)
 
          return values, log_prob, distribution.entropy()
+
+     #TODO: Setup_MOA_loss
