@@ -27,3 +27,8 @@ __pycache__/
 # Saved models.
 /examples/results/
 /meltingpot/assets/
+.vscode/launch.json
+.gitignore
+results/sb3/harvest_open_ppo_paramsharing/PPO_3/events.out.tfevents.1717239381.Tobiass-MacBook-Pro.local.40689.0
+results/sb3/harvest_open_ppo_paramsharing/PPO_2/events.out.tfevents.1717238842.Tobiass-MacBook-Pro.local.40453.0
+results/sb3/harvest_open_ppo_paramsharing/PPO_1/events.out.tfevents.1717238472.Tobiass-MacBook-Pro.local.40250.0

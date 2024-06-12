@@ -376,3 +376,4 @@ class MOAPolicy(ActorCriticPolicy):
          return values, log_prob, distribution.entropy()
 
      #TODO: Setup_MOA_loss
+     #entropy in ssd-games?

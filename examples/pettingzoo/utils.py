@@ -77,7 +77,7 @@ class _MeltingPotPettingZooEnv(pettingzoo_utils.ParallelEnv):
     self.num_cycles = 0
     return utils.timestep_to_observations(timestep), {}
 
-  def step(self, action):
+  def step(self, action:dict):
     """See base class."""
     actions = [action[agent] for agent in self.agents]
     timestep = self._env.step(actions)

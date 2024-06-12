@@ -13,6 +13,7 @@
 # limitations under the License.
 """Binary to run Stable Baselines 3 agents on meltingpot substrates."""
 
+
 import gymnasium as gym
 from meltingpot import substrate
 import stable_baselines3
@@ -117,15 +118,17 @@ def main():
       env_config=env_config,
   )
   env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
-  env = ss.frame_stack_v1(env, num_frames)
+  env = ss.frame_stack_v1(env, num_frames) # stacks environments, so agents work in multiple env simultaniously
+                                           # actions, observations, rewards and other env-agent-specific vars become
+                                           # vectors
   env = ss.pettingzoo_env_to_vec_env_v1(env)
-  env = ss.concat_vec_envs_v1(
+  env = ss.concat_vec_envs_v1(             # does not alter step()
       env,
       num_vec_envs=num_envs,
       num_cpus=num_cpus,
       base_class="stable_baselines3")
-  env = vec_env.VecMonitor(env)
-  env = vec_env.VecTransposeImage(env, True)
+  env = vec_env.VecMonitor(env)            # does not alter step()
+  env = vec_env.VecTransposeImage(env, True) # does not alter step()
 
   eval_env = utils.parallel_env(
       max_cycles=rollout_len,
