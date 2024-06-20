@@ -261,6 +261,7 @@ class MOAPPO(OnPolicyAlgorithm):
       agent_actions = {}
       agent_values = {}
       agent_log_probs = {}
+      clipped_actions = {}
 
       for agent in self.agent_lables:
         if (
@@ -277,6 +278,7 @@ class MOAPPO(OnPolicyAlgorithm):
           episode_starts = th.tensor(
               self._last_episode_starts, dtype=th.float32, device=self.device
           )
+
           (
               agent_actions[agent],
               agent_values[agent],
@@ -288,4 +290,31 @@ class MOAPPO(OnPolicyAlgorithm):
 
         agent_actions[agent] = agent_actions[agent].cpu().numpy()
 
-        clipped_actions = agent_actions[agent]
+        clipped_actions[agent] = agent_actions[agent]
+        if isinstance(self.action_space, spaces.Box):
+          clipped_actions = np.clip(
+              agent_actions[agent],
+              self.action_space.low,
+              self.action_space.high,
+          )
+
+      new_obs, rewards, dones, _, infos = env.step(clipped_actions)
+      self.num_timesteps += env.num_envs
+
+      # Give access to local variables
+      callback.update_locals(locals())
+      if not callback.on_step():
+        return False
+
+      self._update_info_buffer(
+          infos, dones
+      )  # is this necessary for individual agents?
+      # what kind of inforomation do dones and infos contain?
+      # what happens to them in the info_buffer?
+      # TODO: analyse infos and dones, as well as the function of info buffer
+
+      n_steps += 1
+
+      if isinstance(self.action_space, spaces.Discrete):
+        # Reshape in case of discrete action
+        actions = actions.reshape(-1, 1)
