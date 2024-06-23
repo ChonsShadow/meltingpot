@@ -199,8 +199,8 @@ class MOAPPO(OnPolicyAlgorithm):
           moa_lstm.hidden_size,
       )
 
-      # TODO: create buffer class fitting the moa-Policy and if necessary,
-      #       the decentralized learning approach (maybe one buffer per agent?)
+      # TODO: create buffer class fitting the moa-Policy and either adapt it to
+      #       decentralized learning or create a buffer for each agent (probably the latter)
       self.rollout_buffer = buffer_cls(
           self.n_steps,
           self.observation_space,
@@ -270,7 +270,7 @@ class MOAPPO(OnPolicyAlgorithm):
             and n_steps % self.sde_sample_freq == 0
         ):
           # Sample a new noise matrix
-          self.agents_policies.reset_noise(env.num_envs)
+          self.agents_policies[agent].reset_noise(env.num_envs)
 
         with th.no_grad():
           # Convert to pytorch tensor or to TensorDict
@@ -318,3 +318,73 @@ class MOAPPO(OnPolicyAlgorithm):
       if isinstance(self.action_space, spaces.Discrete):
         # Reshape in case of discrete action
         actions = actions.reshape(-1, 1)
+
+      # just seems very strange, gym should be able to handle multiple agents
+      # though sb3 seems to only consider different envs but one single agent
+      for idx in range(len(self.agent_lables)):
+        if (
+            dones["agent-" + str(idx)]
+            and infos["agent-" + str(idx)].get("terminal_observation")
+            is not None
+            and infos["agent-" + str(idx)].get("TimeLimit.truncated", False)
+        ):
+          terminal_obs = self.agents_policies[
+              "agent-" + str(idx)
+          ].obs_to_tensor(infos["agent-" + str(idx)]["terminal_observation"])[0]
+          with th.no_grad():
+            terminal_lstm_states = (
+                lstm_states["agent-" + str(idx)]
+                .ac[0][:, idx : idx + 1, :]
+                .contiguous(),
+                lstm_states["agent-" + str(idx)]
+                .ac[0][:, idx : idx + 1, :]
+                .contiguous(),
+            )
+            episode_starts = th.tensor(
+                [False], dtype=th.float32, device=self.device
+            )
+            terminal_value = self.agents_policies[
+                "agent-" + str(idx)
+            ].predict_values(
+                terminal_obs, terminal_lstm_states, episode_starts
+            )[
+                0
+            ]
+          rewards["agent-" + str(idx)] += self.gamma * terminal_value
+
+      # TODO: adjust this based on the new type of buffer
+      rollout_buffer.add(
+          self._last_obs,
+          actions,
+          rewards,
+          self._last_episode_starts,
+          agent_values,  # TODO: handle dict of values either here or in Buffer
+          agent_log_probs,  # TODO: handle dict of log_probs either here or in Buffer
+          lstm_states=self._last_lstm_states,
+      )
+
+      self._last_obs_agents = new_obs
+      self._last_episode_starts = dones
+      self._last_lstm_states = lstm_states
+
+    with th.no_grad():
+      # compute value for the last timestep
+      agent_values = {}
+      for agent in self.agent_lables:
+        episode_starts = th.tensor(
+            dones[agent], dtype=th.float32, device=self.device
+        )
+        agent_values[agent] = self.agents_policies[agent].predict_values(
+            obs_as_tensor(new_obs, self.device),
+            lstm_states[agent].ac,
+            episode_starts,
+        )
+
+    # TODO: adjust this based on the new type of buffer
+    rollout_buffer.compute_returns_and_advantage(
+        last_values=agent_values, dones=dones
+    )
+
+    callback.on_rollout_end()
+
+    return True
