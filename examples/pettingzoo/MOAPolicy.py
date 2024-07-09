@@ -241,12 +241,6 @@ class MOAPolicy(ActorCriticPolicy):
     :param deterministic: Whether to sample or use deterministic actions
     :return: action, value and log probability of the action
     """
-    #!!!!!!!!!!!!!!!!!!!!!!!!!! MOA hier ?????????????????????????????????????????????
-    """
-        lstm states spielen in sb3-contrib nur hier eine Rolle. Wenn nicht immer (?)
-        sollte MOA hier genutzt werden (ist das hier nicht auch Teil des Trainings, obwohl
-        train_mode false ist??)
-        """
     features = self.extract_features(obs)
 
     latent_ac, latent_moa = self.mlp_extractor.forward(features)
@@ -403,12 +397,6 @@ class MOAPolicy(ActorCriticPolicy):
     :return: estimated value, log likelihood of taking those actions
         and entropy of the action distribution.
     """
-    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! MOA hier ??????????????????????????????????????????????
-    """
-         zwischen MOA und AC besteht über die conv layer hinaus, keine verbindung
-         daher sollte der MOA-spezifische Teil eher während des Trainings laufen
-         wenn nicht immer (?)
-         """
     features = self.extract_features(obs)
     # ?????????
     latent_ac, latent_moa = self.mlp_extractor.forward(features)
@@ -423,4 +411,48 @@ class MOAPolicy(ActorCriticPolicy):
     return values, log_prob, distribution.entropy()
 
   # TODO: Setup_MOA_loss
-  # entropy in ssd-games?
+
+  def calc_moa_loss(self, pred_actions, true_actions, loss_weight=1.0):
+    """
+    applying the approach to reward an agent for influencing others, we need
+    to know the grade of influence. Thus we train the moa_part of the policy with
+    the moa_loss. The implementation in ssd-games suggests modelling the loss by
+    calculating the softmax cross entropy with the predicted actions and the true ones
+    for each timestep, except the first
+    In our case we will use the CrossEntropyLoss function from the torch lib,
+    which combines LogSoftmax and negative-log-likelihood, instead of using plain
+    softmax, which might be numerically less stable
+
+    Args:
+        pred_actions (th.Tensor): A Tensor containing the predicted actions for all agents
+                                  for each timestep. Its dimensions are (B,N,A),
+                                  where B is the number of timesteps, N the number of
+                                  agents and A the number of actions
+        true_actions (th.Tensor): A Tensor containing the true actions of each agent
+                                  at each timestep. Its dimesnions are (B,N), where B
+                                  is the number of timesteps (batchsize) and N the number
+                                  of agents (considering, there will be one 'action' per agent
+                                  instead of logits for all possible actions)
+        loss_weight (float, optional): the weight used to calculate the total loss.
+                                       Defaults to 1.0.
+    """
+    # There cannot be a prediction at t=-1 as well as there won't be an action after
+    # the last batch, so we remove the first and last predictions to have only
+    # predictions for sensible data
+    action_logits = pred_actions[1:-1, :, :]
+
+    # We need to adapt the shape of true_actions, so it fits action_logits
+    # NOTE: ssd-games uses tf.cast() with tf.int32 on true_actions, though I currently
+    #       don't see a good reason to do that as well
+    true_actions = true_actions[2:, :]
+
+    # compute the softmax cross_entropy
+    loss_layer = th.nn.CrossEntropyLoss()
+    ce_loss_per_entry = loss_layer(action_logits, true_actions)
+
+    # NOTE: at this point ssd-games takes the visibility of agents for each other
+    #       into consideration. We will not do that for now.
+
+    total_loss = th.mean(ce_loss_per_entry)
+
+    return total_loss, ce_loss_per_entry

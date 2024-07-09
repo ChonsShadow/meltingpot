@@ -80,6 +80,7 @@ class MOAPPO(OnPolicyAlgorithm):
       normalize_advantage: bool = True,
       ent_coef: float = 0.0,
       vf_coef: float = 0.5,
+      moa_coef: float = 1.0,
       max_grad_norm: float = 0.5,
       use_sde: bool = False,
       sde_sample_freq: int = -1,
@@ -129,9 +130,9 @@ class MOAPPO(OnPolicyAlgorithm):
     self.num_agents = num_agents
     self.agent_lables = []
     self._last_obs_agents = {}
+    self.moa_coef = moa_coef
 
     for i in range(num_agents):
-      self.agent_lables.append("agent-" + str(i))
       self._last_obs_agents[self.agent_lables[i]] = None
 
     if _init_setup_model:
@@ -150,7 +151,7 @@ class MOAPPO(OnPolicyAlgorithm):
     self.agents_policies = {}
     self._last_lstm_states = {}
 
-    for agent in self.agent_lables:
+    for agent in range(self.num_agents):
       self.agents_policies[agent] = self.policy_class(
           self.observation_space,
           self.action_space,
@@ -244,7 +245,7 @@ class MOAPPO(OnPolicyAlgorithm):
         collected, False if callback terminated rollout prematurely.
     """
     # Switch to eval mode (this affects batch norm / dropout)
-    for agent in self.agent_lables:
+    for agent in range(self.num_agents):
       self.agents_policies[agent].set_training_mode(False)
       # Sample new weights for the state dependent exploration
       if self.use_sde:
@@ -258,12 +259,12 @@ class MOAPPO(OnPolicyAlgorithm):
     lstm_states = deepcopy(self._last_lstm_states)
 
     while n_steps < n_rollout_steps:
-      agent_actions = {}
+      agent_actions = []
       agent_values = {}
       agent_log_probs = {}
-      clipped_actions = {}
+      clipped_actions = []
 
-      for agent in self.agent_lables:
+      for agent in range(len(self.agent_lables)):
         if (
             self.use_sde
             and self.sde_sample_freq > 0
@@ -280,19 +281,22 @@ class MOAPPO(OnPolicyAlgorithm):
           )
 
           (
-              agent_actions[agent],
+              new_actions,
               agent_values[agent],
               agent_log_probs[agent],
-              lstm_states[agent],
+              new_lstm_states,
           ) = self.policy.forward(
               obs_tensor, lstm_states[agent], episode_starts
           )
 
-        agent_actions[agent] = agent_actions[agent].cpu().numpy()
+          new_actions = new_actions.cpu().numpy()
+          agent_actions.append(new_actions)
+          lstm_states[agent] = new_lstm_states
 
-        clipped_actions[agent] = agent_actions[agent]
+        clipped_actions.append(agent_actions[agent])
+
         if isinstance(self.action_space, spaces.Box):
-          clipped_actions = np.clip(
+          clipped_actions[agent] = np.clip(
               agent_actions[agent],
               self.action_space.low,
               self.action_space.high,
@@ -317,45 +321,37 @@ class MOAPPO(OnPolicyAlgorithm):
 
       if isinstance(self.action_space, spaces.Discrete):
         # Reshape in case of discrete action
-        actions = actions.reshape(-1, 1)
+        for agent in range(self.num_agents):
+          agent_actions[agent] = agent_actions[agent].reshape(-1, 1)
 
-      # just seems very strange, gym should be able to handle multiple agents
+      # NOTE: this seems very strange, gym should be able to handle multiple agents
       # though sb3 seems to only consider different envs but one single agent
-      for idx in range(len(self.agent_lables)):
+      for idx, done_ in enumerate(dones):
         if (
-            dones["agent-" + str(idx)]
-            and infos["agent-" + str(idx)].get("terminal_observation")
-            is not None
-            and infos["agent-" + str(idx)].get("TimeLimit.truncated", False)
+            done_
+            and infos[idx].get("terminal_observation") is not None
+            and infos[idx].get("TimeLimit.truncated", False)
         ):
-          terminal_obs = self.agents_policies[
-              "agent-" + str(idx)
-          ].obs_to_tensor(infos["agent-" + str(idx)]["terminal_observation"])[0]
+          terminal_obs = self.agents_policies[idx].obs_to_tensor(
+              infos[idx]["terminal_observation"]
+          )[0]
           with th.no_grad():
             terminal_lstm_states = (
-                lstm_states["agent-" + str(idx)]
-                .ac[0][:, idx : idx + 1, :]
-                .contiguous(),
-                lstm_states["agent-" + str(idx)]
-                .ac[0][:, idx : idx + 1, :]
-                .contiguous(),
+                lstm_states[idx].ac[0][:, idx : idx + 1, :].contiguous(),
+                lstm_states[idx].ac[0][:, idx : idx + 1, :].contiguous(),
             )
             episode_starts = th.tensor(
                 [False], dtype=th.float32, device=self.device
             )
-            terminal_value = self.agents_policies[
-                "agent-" + str(idx)
-            ].predict_values(
+            terminal_value = self.agents_policies[idx].predict_values(
                 terminal_obs, terminal_lstm_states, episode_starts
-            )[
-                0
-            ]
-          rewards["agent-" + str(idx)] += self.gamma * terminal_value
+            )[0]
+          rewards[idx] += self.gamma * terminal_value
 
       # TODO: adjust this based on the new type of buffer
       rollout_buffer.add(
           self._last_obs,
-          actions,
+          agent_actions,
           rewards,
           self._last_episode_starts,
           agent_values,  # TODO: handle dict of values either here or in Buffer
@@ -388,3 +384,131 @@ class MOAPPO(OnPolicyAlgorithm):
     callback.on_rollout_end()
 
     return True
+
+  def train(self) -> None:
+    """
+    Update policy using the currently gathered rollout buffer.
+    """
+    for agent in self.agent_lables:
+      # Switch to train mode (this affects batch norm / dropout)
+      self.agents_policies[agent].set_training_mode(True)
+      # Update optimizer learning rate
+      self._update_learning_rate(self.agents_policies[agent].optimizer)
+
+    # Compute current clip range
+    clip_range = self.clip_range(self._current_progress_remaining)
+    # Optional: clip range for the value function
+    # TODO: adjust for ac+moa model. Maybe clip_range_moa instead of vf?
+    if self.clip_range_vf is not None:
+      clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+
+    # TODO: structures needed for logging
+
+    # TODO: either make this dependent on a mean kl_div or make a
+    #       dict to decide continue training based on all agents
+    continue_training = True
+
+    for epoch in range(self.n_epochs):
+      approc_kl_divs = []
+      # Do a complete pass on the rollout buffer
+      # TODO: either leave it at one buffer and handle multiple
+      #       agents internally or addapt to multiple different buffers that each handle
+      #       one agent
+      for rollout_data in self.rollout_buffer.get(self.batch_size):
+        # no need to adapt here: in any case we should get aan agent-keyed
+        # dict with all actions
+        actions = rollout_data.actions
+        if isinstance(self.action_space, spaces.Discrete):
+          # convert discrete actions from float to long
+          actions = rollout_data.actions.long().flatten()
+
+        # convert mask from float to bool
+        mask = rollout_data.mask > 1e-8
+
+        # TODO: if we use multiple buffers we won't need to iterate over the agents here
+        # from here on out, every instance of the three dicts below, would need to be adapted
+        # to not be a dict and instead always be the specific value for the agent we are
+        # currently handling
+        values = {}
+        log_prob = {}
+        entropy = {}
+        # Re-sample the noise matrix because the log_std has changed
+        for agent in self.agent_lables:
+          if self.use_sde:
+            self.agents_policies[agent].reset_noise(self.batch_size)
+
+          # TODO: if we use multiple buffers, we won't get dicts here either
+          values[agent], log_prob[agent], entropy[agent] = self.agents_policies[
+              agent
+          ].evaluate_actions(
+              rollout_data.observation[agent],
+              actions[agent],
+              rollout_data.lstm_states[agent],
+              rollout_data.episode_starts[agent],
+          )
+
+          values[agent] = values[agent].flatten()
+
+        # Normalize advantage
+        advantages = rollout_data.advantages
+        if self.normalize_advantage:
+          advantages = (advantages - advantages[mask].mean) / (
+              advantages[mask].std() + 1e-8
+          )
+
+        # ratio between old and new policy, should be 1 at the first iteration
+        # TODO: adapt according to buffer and necessaty of dicts in this context
+        policy_loss = {}
+        value_loss = {}
+        entropy_loss = {}
+        moa_loss = {}
+        for agent in self.agent_lables:
+          ratio = th.exp(log_prob[agent] - rollout_data.old_log_prob)
+
+          # clipped surrogate loss
+          policy_loss_1 = advantages * ratio
+          policy_loss_2 = advantages * th.clamp(
+              ratio, 1 - clip_range, 1 + clip_range
+          )
+          policy_loss[agent] = -th.mean(
+              th.min(policy_loss_1, policy_loss_2)[mask]
+          )
+
+          # TODO: Logging
+
+          if self.clip_range_vf is None:
+            # No clipping
+            values_pred = values[agent]
+          else:
+            # Clip the difference between old and new value
+            # NOTE: this depends on the reward scaling
+            values_pred = rollout_data.old_values[agent] + th.clamp(
+                values[agent] - rollout_data.old_values[agent],
+                -clip_range_vf,
+                clip_range_vf,
+            )
+
+          # Value loss using the TD(gae_lambda) target
+          # Mask padded sequences
+          value_loss[agent] = th.mean(
+              ((rollout_data.returns[agent] - values_pred) ** 2)[mask]
+          )
+
+          # TODO:Logging
+
+          # Entropy loss favor exploration
+          if entropy is None:
+            # Approximate entropy when no analytical form
+            entropy_loss[agent] = -th.mean(-log_prob[mask])
+          else:
+            entropy_loss[agent] = -th.mean(entropy[mask])
+
+          # TODO: Logging
+
+          moa_loss[agent] = self.agents_policies[agent].calc_moa_loss()
+
+        loss = (
+            policy_loss
+            + self.ent_coef * entropy_loss
+            + self.vf_coef * value_loss
+        )
