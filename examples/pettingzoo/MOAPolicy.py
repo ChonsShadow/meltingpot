@@ -410,7 +410,8 @@ class MOAPolicy(ActorCriticPolicy):
 
     return values, log_prob, distribution.entropy()
 
-  # TODO: Setup_MOA_loss
+  # TODO: handle pred_actions in collect_rollouts in MOAPPO and make them a tensor
+  #       to use as a parameter in calc_moa_loss
 
   def calc_moa_loss(self, pred_actions, true_actions, loss_weight=1.0):
     """
@@ -427,7 +428,8 @@ class MOAPolicy(ActorCriticPolicy):
         pred_actions (th.Tensor): A Tensor containing the predicted actions for all agents
                                   for each timestep. Its dimensions are (B,N,A),
                                   where B is the number of timesteps, N the number of
-                                  agents and A the number of actions
+                                  agents and A the number of actions (probably
+                                  relating to the number of envs)
         true_actions (th.Tensor): A Tensor containing the true actions of each agent
                                   at each timestep. Its dimesnions are (B,N), where B
                                   is the number of timesteps (batchsize) and N the number
@@ -453,6 +455,6 @@ class MOAPolicy(ActorCriticPolicy):
     # NOTE: at this point ssd-games takes the visibility of agents for each other
     #       into consideration. We will not do that for now.
 
-    total_loss = th.mean(ce_loss_per_entry)
+    total_loss = th.mean(ce_loss_per_entry) * loss_weight
 
     return total_loss, ce_loss_per_entry

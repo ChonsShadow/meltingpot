@@ -129,11 +129,11 @@ class MOAPPO(OnPolicyAlgorithm):
     self._last_lstm_states = None
     self.num_agents = num_agents
     self.agent_lables = []
-    self._last_obs_agents = {}
+    self._last_obs_agents = []
     self.moa_coef = moa_coef
 
     for i in range(num_agents):
-      self._last_obs_agents[self.agent_lables[i]] = None
+      self._last_obs_agents.append(None)
 
     if _init_setup_model:
       self._setup_model()
@@ -148,16 +148,18 @@ class MOAPPO(OnPolicyAlgorithm):
         else RecurrentRolloutBuffer
     )
 
-    self.agents_policies = {}
-    self._last_lstm_states = {}
+    self.agents_policies = []
+    self._last_lstm_states = []
 
     for agent in range(self.num_agents):
-      self.agents_policies[agent] = self.policy_class(
-          self.observation_space,
-          self.action_space,
-          self.lr_schedule,
-          use_sde=self.use_sde,
-          **self.policy_kwargs
+      self.agents_policies.append(
+          self.policy_class(
+              self.observation_space,
+              self.action_space,
+              self.lr_schedule,
+              use_sde=self.use_sde,
+              **self.policy_kwargs,
+          )
       )
       self.agents_policies[agent].to(self.device)
       # the lstms have different purposes, thus they surely may have different architectures
@@ -175,15 +177,17 @@ class MOAPPO(OnPolicyAlgorithm):
           moa_lstm.hidden_size,
       )
       # states for ac und moa lstms:
-      self._last_lstm_states[agent] = RNNStates(
-          (
-              th.zeros(ac_single_hidden_state_shape, device=self.device),
-              th.zeros(ac_single_hidden_state_shape, device=self.device),
-          ),
-          (
-              th.zeros(moa_single_hidden_state_shape, device=self.device),
-              th.zeros(moa_single_hidden_state_shape, device=self.device),
-          ),
+      self._last_lstm_states.append(
+          RNNStates(
+              (
+                  th.zeros(ac_single_hidden_state_shape, device=self.device),
+                  th.zeros(ac_single_hidden_state_shape, device=self.device),
+              ),
+              (
+                  th.zeros(moa_single_hidden_state_shape, device=self.device),
+                  th.zeros(moa_single_hidden_state_shape, device=self.device),
+              ),
+          )
       )
 
       ac_hidden_state_buffer_shape = (
@@ -260,8 +264,8 @@ class MOAPPO(OnPolicyAlgorithm):
 
     while n_steps < n_rollout_steps:
       agent_actions = []
-      agent_values = {}
-      agent_log_probs = {}
+      agent_values = []
+      agent_log_probs = []
       clipped_actions = []
 
       for agent in range(len(self.agent_lables)):
@@ -282,8 +286,8 @@ class MOAPPO(OnPolicyAlgorithm):
 
           (
               new_actions,
-              agent_values[agent],
-              agent_log_probs[agent],
+              values,
+              log_probs,
               new_lstm_states,
           ) = self.policy.forward(
               obs_tensor, lstm_states[agent], episode_starts
@@ -291,6 +295,8 @@ class MOAPPO(OnPolicyAlgorithm):
 
           new_actions = new_actions.cpu().numpy()
           agent_actions.append(new_actions)
+          agent_values.append(values)
+          agent_log_probs.append(log_probs)
           lstm_states[agent] = new_lstm_states
 
         clipped_actions.append(agent_actions[agent])
@@ -348,14 +354,16 @@ class MOAPPO(OnPolicyAlgorithm):
             )[0]
           rewards[idx] += self.gamma * terminal_value
 
-      # TODO: adjust this based on the new type of buffer
+      # TODO: adjust this based on the new type of buffer (collect moa-logits in List/Tensor,
+      #       either make a loop to handle multiple buffers or handle different agents in one
+      #       adjusted buffer)
       rollout_buffer.add(
           self._last_obs,
           agent_actions,
           rewards,
           self._last_episode_starts,
-          agent_values,  # TODO: handle dict of values either here or in Buffer
-          agent_log_probs,  # TODO: handle dict of log_probs either here or in Buffer
+          agent_values,  # TODO: handle list of values from different agents either here or in Buffer
+          agent_log_probs,  # TODO: handle list of log_probs from different agents either here or in Buffer
           lstm_states=self._last_lstm_states,
       )
 
@@ -365,15 +373,17 @@ class MOAPPO(OnPolicyAlgorithm):
 
     with th.no_grad():
       # compute value for the last timestep
-      agent_values = {}
+      agent_values = []
       for agent in self.agent_lables:
         episode_starts = th.tensor(
             dones[agent], dtype=th.float32, device=self.device
         )
-        agent_values[agent] = self.agents_policies[agent].predict_values(
-            obs_as_tensor(new_obs, self.device),
-            lstm_states[agent].ac,
-            episode_starts,
+        agent_values.append(
+            self.agents_policies[agent].predict_values(
+                obs_as_tensor(new_obs, self.device),
+                lstm_states[agent].ac,
+                episode_starts,
+            )
         )
 
     # TODO: adjust this based on the new type of buffer
@@ -409,7 +419,7 @@ class MOAPPO(OnPolicyAlgorithm):
     continue_training = True
 
     for epoch in range(self.n_epochs):
-      approc_kl_divs = []
+      mean_approx_kl_divs = []
       # Do a complete pass on the rollout buffer
       # TODO: either leave it at one buffer and handle multiple
       #       agents internally or addapt to multiple different buffers that each handle
@@ -429,16 +439,16 @@ class MOAPPO(OnPolicyAlgorithm):
         # from here on out, every instance of the three dicts below, would need to be adapted
         # to not be a dict and instead always be the specific value for the agent we are
         # currently handling
-        values = {}
-        log_prob = {}
-        entropy = {}
+        values = []
+        log_prob = []
+        entropy = []
         # Re-sample the noise matrix because the log_std has changed
         for agent in self.agent_lables:
           if self.use_sde:
             self.agents_policies[agent].reset_noise(self.batch_size)
 
           # TODO: if we use multiple buffers, we won't get dicts here either
-          values[agent], log_prob[agent], entropy[agent] = self.agents_policies[
+          new_value, new_log_prob, new_entropy = self.agents_policies[
               agent
           ].evaluate_actions(
               rollout_data.observation[agent],
@@ -446,6 +456,9 @@ class MOAPPO(OnPolicyAlgorithm):
               rollout_data.lstm_states[agent],
               rollout_data.episode_starts[agent],
           )
+          values.append(new_value)
+          log_prob.append(new_log_prob)
+          entropy.append(new_entropy)
 
           values[agent] = values[agent].flatten()
 
@@ -457,12 +470,11 @@ class MOAPPO(OnPolicyAlgorithm):
           )
 
         # ratio between old and new policy, should be 1 at the first iteration
-        # TODO: adapt according to buffer and necessaty of dicts in this context
-        policy_loss = {}
-        value_loss = {}
-        entropy_loss = {}
-        moa_loss = {}
-        for agent in self.agent_lables:
+        # TODO: adapt according to buffer and necessaty of list in this context,
+        #       possibly depending on the usage of one or multiple buffers
+        loss = []
+        current_approx_kl_divs = []
+        for agent in range(self.num_agents):
           ratio = th.exp(log_prob[agent] - rollout_data.old_log_prob)
 
           # clipped surrogate loss
@@ -470,9 +482,7 @@ class MOAPPO(OnPolicyAlgorithm):
           policy_loss_2 = advantages * th.clamp(
               ratio, 1 - clip_range, 1 + clip_range
           )
-          policy_loss[agent] = -th.mean(
-              th.min(policy_loss_1, policy_loss_2)[mask]
-          )
+          policy_loss = -th.mean(th.min(policy_loss_1, policy_loss_2)[mask])
 
           # TODO: Logging
 
@@ -490,7 +500,7 @@ class MOAPPO(OnPolicyAlgorithm):
 
           # Value loss using the TD(gae_lambda) target
           # Mask padded sequences
-          value_loss[agent] = th.mean(
+          value_loss = th.mean(
               ((rollout_data.returns[agent] - values_pred) ** 2)[mask]
           )
 
@@ -499,16 +509,60 @@ class MOAPPO(OnPolicyAlgorithm):
           # Entropy loss favor exploration
           if entropy is None:
             # Approximate entropy when no analytical form
-            entropy_loss[agent] = -th.mean(-log_prob[mask])
+            entropy_loss = -th.mean(-log_prob[mask])
           else:
-            entropy_loss[agent] = -th.mean(entropy[mask])
+            entropy_loss = -th.mean(entropy[mask])
 
           # TODO: Logging
 
-          moa_loss[agent] = self.agents_policies[agent].calc_moa_loss()
+          moa_loss = self.agents_policies[agent].calc_moa_loss(
+              rollout_data.moa_logits, rollout_data.actions
+          )  # TODO: add moa_logits to rolloutbuffer
 
-        loss = (
-            policy_loss
-            + self.ent_coef * entropy_loss
-            + self.vf_coef * value_loss
-        )
+          loss.append(
+              policy_loss
+              + self.ent_coef * entropy_loss
+              + self.vf_coef * value_loss
+              + self.moa_coef * moa_loss
+          )
+
+          with th.no_grad():
+            log_ratio = log_prob - rollout_data.old_log_prob
+            current_approx_kl_divs.append(
+                th.mean(((th.exp(log_ratio) - 1) - log_ratio)[mask])
+                .cpu()
+                .numpy()
+            )
+
+        with th.no_grad():
+          cur_mean_approx_kl_div = np.mean(current_approx_kl_divs)
+          mean_approx_kl_divs.append(cur_mean_approx_kl_div)
+
+        if (
+            self.target_kl is not None
+            and cur_mean_approx_kl_div > 1.5 * self.target_kl
+        ):
+          continue_training = False
+          if self.verbose >= 1:
+            print(
+                f"Early stopping at step {epoch} due to reaching max kl:"
+                f" {cur_mean_approx_kl_div:.2f}"
+            )
+          break
+
+        # Optimization:
+        for agent in range(self.num_agents):
+          self.agents_policies[agent].optimizer.zero_grad()
+          loss[agent].backward()
+          # Clip grad norm
+          th.nn.utils.clip_grad_norm_(
+              self.policy[agent].parameters(), self.max_grad_norm
+          )
+          self.policy[agent].optimizer.step()
+
+      if not continue_training:
+        break
+
+    self._n_updates += self.n_epochs
+
+    # TODO: logging
