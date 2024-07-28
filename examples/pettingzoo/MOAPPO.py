@@ -21,7 +21,7 @@ class MOAPPO(OnPolicyAlgorithm):
   Proximal Policy Optimization algorithm (PPO) (clip version)
   with support for recurrent policies and decentralized learning.
 
-  Based on the original Stable Baselines 3 implementation and the recurrent
+  NOTE: Based on the original Stable Baselines 3 implementation and the recurrent
   implementation from sb3-contrib
 
   Introduction to PPO: https://spinningup.openai.com/en/latest/algorithms/ppo.html
@@ -248,6 +248,7 @@ class MOAPPO(OnPolicyAlgorithm):
     :return: True if function returned with at least `n_rollout_steps`
         collected, False if callback terminated rollout prematurely.
     """
+    # TODO: handle multiple envs!
     # Switch to eval mode (this affects batch norm / dropout)
     for agent in range(self.num_agents):
       self.agents_policies[agent].set_training_mode(False)
@@ -268,7 +269,7 @@ class MOAPPO(OnPolicyAlgorithm):
       agent_log_probs = []
       clipped_actions = []
 
-      for agent in range(len(self.agent_lables)):
+      for agent in range(self.num_agents):
         if (
             self.use_sde
             and self.sde_sample_freq > 0
@@ -374,7 +375,7 @@ class MOAPPO(OnPolicyAlgorithm):
     with th.no_grad():
       # compute value for the last timestep
       agent_values = []
-      for agent in self.agent_lables:
+      for agent in range(self.num_agents):
         episode_starts = th.tensor(
             dones[agent], dtype=th.float32, device=self.device
         )
@@ -399,7 +400,7 @@ class MOAPPO(OnPolicyAlgorithm):
     """
     Update policy using the currently gathered rollout buffer.
     """
-    for agent in self.agent_lables:
+    for agent in range(self.num_agents):
       # Switch to train mode (this affects batch norm / dropout)
       self.agents_policies[agent].set_training_mode(True)
       # Update optimizer learning rate
@@ -421,9 +422,11 @@ class MOAPPO(OnPolicyAlgorithm):
     for epoch in range(self.n_epochs):
       mean_approx_kl_divs = []
       # Do a complete pass on the rollout buffer
-      # TODO: either leave it at one buffer and handle multiple
-      #       agents internally or addapt to multiple different buffers that each handle
-      #       one agent
+      # TODO: we leave it at one buffer and handle multiple
+      #       agents internally, so this will be encapsuled in a for loop
+      #       that iterates over the agent indices. Maybe this will be where we
+      #       need to handle the multiple envs
+
       for rollout_data in self.rollout_buffer.get(self.batch_size):
         # no need to adapt here: in any case we should get aan agent-keyed
         # dict with all actions
@@ -443,7 +446,7 @@ class MOAPPO(OnPolicyAlgorithm):
         log_prob = []
         entropy = []
         # Re-sample the noise matrix because the log_std has changed
-        for agent in self.agent_lables:
+        for agent in range(self.num_agents):
           if self.use_sde:
             self.agents_policies[agent].reset_noise(self.batch_size)
 
