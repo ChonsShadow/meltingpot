@@ -663,11 +663,26 @@ class MOABuffer(RolloutBuffer):
     )
 
   def compute_returns_and_advantage(
+      self, last_values: th.Tensor, dones: np.ndarray, num_agents: int
+  ) -> None:
+    """
+    post_processing: apply agents_returns_and_advantage to all agents to
+    calculate the full returns and advantages
+
+    Args:
+        :param last_values: state value estimation for the last step (one for each env)
+        :param dones: if the last step was a terminal step (one bool for each env).
+        :param num_agents: the number of agents for use of iteration
+    """
+    for agent in range(num_agents):
+      self.agents_returns_and_advantage(last_values, dones, agent)
+
+  def agents_returns_and_advantage(
       self, last_values: th.Tensor, dones: np.ndarray, agent: int
   ) -> None:
     """
-    Post-processing step: compute the lambda-return (TD(lambda) estimate)
-    and GAE(lambda) advantage.
+    Post-processing step: compute the lambda-return(TD(lambda) estimate and
+    GAE(lambda) advantage for a single agent
 
     Uses Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
     to compute the advantage. To obtain Monte-Carlo advantage estimate (A(s) = R - V(S))
