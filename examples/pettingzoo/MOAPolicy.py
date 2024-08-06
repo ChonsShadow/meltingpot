@@ -273,6 +273,7 @@ class MOAPolicy(ActorCriticPolicy):
         actions,
         value,
         log_prob,
+        pred_actions,
         RNNStates(new_ac_lstm_states, new_moa_lstm_states),
         inf_rew,
     )
@@ -401,8 +402,8 @@ class MOAPolicy(ActorCriticPolicy):
 
     return values, log_prob, distribution.entropy()
 
-  # TODO: handle pred_actions in collect_rollouts in MOAPPO and make them a tensor
-  #       to use as a parameter in calc_moa_loss
+  # NOTE: pred_actions and true actions may have different shapes than assumed at first
+  #       needs testing before calc_moa_loss gets called!
 
   def calc_moa_loss(self, pred_actions, true_actions, loss_weight=1.0):
     """

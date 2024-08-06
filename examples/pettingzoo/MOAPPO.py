@@ -12,7 +12,7 @@ from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
 from stable_baselines3.common.vec_env import VecEnv
-from buffers import RecurrentDictRolloutBuffer, RecurrentRolloutBuffer
+from buffers import RecurrentDictRolloutBuffer, RecurrentRolloutBuffer, MOABuffer
 from type_aliases import RNNStates
 
 
@@ -142,11 +142,7 @@ class MOAPPO(OnPolicyAlgorithm):
     self._setup_lr_schedule()
     self.set_random_seed(self.seed)
 
-    buffer_cls = (
-        RecurrentDictRolloutBuffer
-        if isinstance(self.observation_space, spaces.Dict)
-        else RecurrentRolloutBuffer
-    )
+    buffer_cls = MOABuffer
 
     self.agents_policies = []
     self._last_lstm_states = []
@@ -204,13 +200,12 @@ class MOAPPO(OnPolicyAlgorithm):
           moa_lstm.hidden_size,
       )
 
-      # TODO: create buffer class fitting the moa-Policy and either adapt it to
-      #       decentralized learning or create a buffer for each agent (probably the latter)
       self.rollout_buffer = buffer_cls(
           self.n_steps,
           self.observation_space,
           self.action_space,
           ac_hidden_state_buffer_shape,
+          moa_hidden_state_buffer_shape,
           self.device,
           gamma=self.gamma,
           gae_lambda=self.gae_lambda,
@@ -268,6 +263,7 @@ class MOAPPO(OnPolicyAlgorithm):
       agent_values = []
       agent_log_probs = []
       clipped_actions = []
+      agents_pred_acts = []
       inf_rews = np.zeros(self.num_agents)
 
       for agent in range(self.num_agents):
@@ -286,16 +282,22 @@ class MOAPPO(OnPolicyAlgorithm):
               self._last_episode_starts, dtype=th.float32, device=self.device
           )
 
-          (new_actions, values, log_probs, new_lstm_states, inf_rew) = (
-              self.policy.forward(
-                  obs_tensor, lstm_states[agent], episode_starts
-              )
+          (
+              new_actions,
+              values,
+              log_probs,
+              pred_actions,
+              new_lstm_states,
+              inf_rew,
+          ) = self.policy.forward(
+              obs_tensor, lstm_states[agent], episode_starts
           )
 
           new_actions = new_actions.cpu().numpy()
           agent_actions.append(new_actions)
           agent_values.append(values)
           agent_log_probs.append(log_probs)
+          agents_pred_acts.append(pred_actions)
           inf_rews[agent] = inf_rew
           lstm_states[agent] = new_lstm_states
 
@@ -366,9 +368,10 @@ class MOAPPO(OnPolicyAlgorithm):
           agent_actions,
           rewards,
           self._last_episode_starts,
-          agent_values,  # TODO: handle list of values from different agents either here or in Buffer
-          agent_log_probs,  # TODO: handle list of log_probs from different agents either here or in Buffer
+          agent_values,
+          agent_log_probs,
           lstm_states=self._last_lstm_states,
+          pred_actions=agents_pred_acts,
       )
 
       self._last_obs_agents = new_obs
@@ -522,7 +525,7 @@ class MOAPPO(OnPolicyAlgorithm):
           # TODO: Logging
 
           moa_loss = self.agents_policies[agent].calc_moa_loss(
-              rollout_data.moa_logits, rollout_data.actions
+              rollout_data.pred_actions, rollout_data.actions
           )  # TODO: add moa_logits to rolloutbuffer
 
           loss.append(
