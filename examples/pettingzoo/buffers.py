@@ -11,6 +11,7 @@ from type_aliases import (
     RecurrentDictRolloutBufferSamples,
     RecurrentRolloutBufferSamples,
     RNNStates,
+    MoaRolloutBufferSamples,
 )
 
 
@@ -518,8 +519,12 @@ class MOABuffer(RolloutBuffer):
     self.cell_states_moa = np.zeros(
         self.moa_hidden_state_shape, dtype=np.float32
     )
+    self.pred_actions = np.zeros(
+        (self.buffer_size, self.n_envs, self.action_dim * self.n_envs),
+        dtype=np.float32,
+    )
 
-  def add(self, *args, lstm_states: RNNStates, **kwargs) -> None:
+  def add(self, *args, lstm_states: RNNStates, pred_actions, **kwargs) -> None:
     """
     :param hidden_states: LSTM cell and hidden state
     """
@@ -529,6 +534,7 @@ class MOABuffer(RolloutBuffer):
         lstm_states.moa[0].cpu().numpy()
     )
     self.cell_states_moa[self.pos] = np.array(lstm_states.moa[1].cpu().numpy())
+    self.pred_actions[self.pos] = np.array(pred_actions)
 
     super().add(*args, **kwargs)
 
@@ -643,9 +649,9 @@ class MOABuffer(RolloutBuffer):
         self.to_torch(lstm_states_moa[1]).contiguous(),
     )
 
-    return RecurrentRolloutBufferSamples(
+    return MoaRolloutBufferSamples(
         # (batch_size, obs_dim) -> (n_seq, max_length, obs_dim) -> (n_seq * max_length, obs_dim)
-        observations=self.pad(self.observations[batch_inds, agent]).reshape(
+        observations=self.pad(self.observations[[batch_inds], agent]).reshape(
             (padded_batch_size, *self.obs_shape)
         ),
         actions=self.pad(self.actions[[batch_inds], agent]).reshape(
@@ -656,6 +662,7 @@ class MOABuffer(RolloutBuffer):
         advantages=self.pad_and_flatten(self.advantages[[batch_inds], agent]),
         returns=self.pad_and_flatten(self.returns[[batch_inds], agent]),
         lstm_states=RNNStates(lstm_states_ac, lstm_states_moa),
+        pred_actions=self.pad(self.pred_actions[[batch_inds], agent]),
         episode_starts=self.pad_and_flatten(self.episode_starts),
         mask=self.pad_and_flatten(
             np.ones_like(self.returns[[batch_inds], agent])
