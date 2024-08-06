@@ -77,7 +77,7 @@ class MOAPolicy(ActorCriticPolicy):
     self.num_other_agents = num_other_agents
     self.influence_only_when_visible = influence_only_when_visible
     self.num_actions = get_action_dim(action_space)
-    self.prev_actions = []
+    self.prev_action = []
     self.div_measure = div_measure
     self.influence_reward = None
     self.prev_act_logits = None
@@ -176,7 +176,6 @@ class MOAPolicy(ActorCriticPolicy):
     # Init weights: use orthogonal initialization
     # with small initial weight for the output
     if self.ortho_init:
-      # TODO: check for features_extractor
       # Values from stable-baselines.
       # features_extractor/mlp values are
       # originally from openai/baselines (default gains/init_scales).
@@ -221,15 +220,14 @@ class MOAPolicy(ActorCriticPolicy):
   def forward(
       self,
       obs,
-      own_acts,
-      other_agents_acts,
+      own_action,
+      actions,
       lstm_states: RNNStates,
       episode_starts,
       deterministic,
       prev_obs,
       prev_acts,
       prev_episode_starts,
-      visibility,
   ):
     """
     Forward pass in all the networks (actor, critic and moa)
@@ -248,10 +246,9 @@ class MOAPolicy(ActorCriticPolicy):
         latent_ac, lstm_states.ac, episode_starts
     )
 
-    actions = th.cat([other_agents_acts, own_acts])
     flattened_acts = th.flatten(actions)
     moa_features = th.cat([latent_moa, flattened_acts])
-    action_pred, new_moa_lstm_states = self.moa_lstm.forward(
+    pred_actions, new_moa_lstm_states = self.moa_lstm.forward(
         moa_features, lstm_states.moa, episode_starts
     )
 
@@ -263,10 +260,10 @@ class MOAPolicy(ActorCriticPolicy):
         counterfacts, [-1, counterfacts.shape(-2), counterfacts.shape(-1)]
     )
 
-    self.calc_influence_reward(self.prev_act_logits, counterfacts, visibility)
+    inf_rew = self.calc_influence_reward(self.prev_act_logits, counterfacts)
 
-    self.prev_actions = own_acts
-    self.prev_act_logits = action_pred
+    self.prev_action = own_action
+    self.prev_act_logits = pred_actions
 
     action_dist = self._get_action_dist_from_latent(latent_pi)
     actions = action_dist.get_actions(deterministic=deterministic)
@@ -277,11 +274,10 @@ class MOAPolicy(ActorCriticPolicy):
         value,
         log_prob,
         RNNStates(new_ac_lstm_states, new_moa_lstm_states),
+        inf_rew,
     )
 
-  def calc_influence_reward(
-      self, prev_action_logits, counterfactual_logits, visibility
-  ):
+  def calc_influence_reward(self, prev_action_logits, counterfactual_logits):
     """
     Compute influence of this agent on other agents.
     :param prev_action_logits: Logits for the agent's own policy/actions at t-1
@@ -290,7 +286,7 @@ class MOAPolicy(ActorCriticPolicy):
     """
     # prev actions sollte basierend auf den Kommentaren in ssd die Aktionen des letzten
     # steps enthalten
-    prev_agent_actions = self.prev_actions
+    prev_agent_actions = self.prev_action
     softmax = th.nn.Softmax()
 
     predicted_logits = gather_nd(
@@ -319,13 +315,8 @@ class MOAPolicy(ActorCriticPolicy):
       print("influence measure is not implemented, using kl as default...")
       influence_reward = kl_div(predicted_logits, marginal_logits)
 
-    # Zero out influence for steps where the other agent isn't visible.
-    if self.influence_only_when_visible:
-      visibility = visibility.type(th.FloatTensor)
-      influence_reward *= visibility
-
     influence_reward = th.sum(influence_reward, dim=-1)
-    self.influence_reward = influence_reward
+    return influence_reward
 
   def marginalize_predictions(self, prev_action_logits, counterfactual_logits):
     """
@@ -390,7 +381,7 @@ class MOAPolicy(ActorCriticPolicy):
     given the observations.
 
     :param obs: Observation.
-    :param actions: !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!probably only own actions!!!!!!
+    :param actions: all actions (only consider those of others) TODO: take care of different envs
     :param lstm_states: The last hidden and memory states for the LSTM.
     :param episode_starts: Whether the observations correspond to new episodes
         or not (we reset the lstm states in that case).
@@ -398,7 +389,7 @@ class MOAPolicy(ActorCriticPolicy):
         and entropy of the action distribution.
     """
     features = self.extract_features(obs)
-    # ?????????
+
     latent_ac, latent_moa = self.mlp_extractor.forward(features)
     latent_pi, values, _ = self.ac_lstm.forward(
         latent_ac, lstm_states.ac, episode_starts

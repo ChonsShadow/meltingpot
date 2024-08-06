@@ -268,6 +268,7 @@ class MOAPPO(OnPolicyAlgorithm):
       agent_values = []
       agent_log_probs = []
       clipped_actions = []
+      inf_rews = np.zeros(self.num_agents)
 
       for agent in range(self.num_agents):
         if (
@@ -285,19 +286,17 @@ class MOAPPO(OnPolicyAlgorithm):
               self._last_episode_starts, dtype=th.float32, device=self.device
           )
 
-          (
-              new_actions,
-              values,
-              log_probs,
-              new_lstm_states,
-          ) = self.policy.forward(
-              obs_tensor, lstm_states[agent], episode_starts
+          (new_actions, values, log_probs, new_lstm_states, inf_rew) = (
+              self.policy.forward(
+                  obs_tensor, lstm_states[agent], episode_starts
+              )
           )
 
           new_actions = new_actions.cpu().numpy()
           agent_actions.append(new_actions)
           agent_values.append(values)
           agent_log_probs.append(log_probs)
+          inf_rews[agent] = inf_rew
           lstm_states[agent] = new_lstm_states
 
         clipped_actions.append(agent_actions[agent])
@@ -310,6 +309,10 @@ class MOAPPO(OnPolicyAlgorithm):
           )
 
       new_obs, rewards, dones, _, infos = env.step(clipped_actions)
+      rewards = np.add(rewards, inf_rews)
+      # normalize rewards: NOTE: we assume that inf_rews are normalized, because
+      # used to calculate them are all normalized, TODO: this needs to be tested
+      rewards = rewards / 2
       self.num_timesteps += env.num_envs
 
       # Give access to local variables
