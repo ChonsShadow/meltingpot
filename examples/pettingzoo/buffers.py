@@ -509,6 +509,7 @@ class MOABuffer(RolloutBuffer):
 
   def reset(self):
     super().reset()
+    self.pure_rews = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
     self.hidden_states_ac = np.zeros(
         self.ac_hidden_state_shape, dtype=np.float32
     )
@@ -524,7 +525,9 @@ class MOABuffer(RolloutBuffer):
         dtype=np.float32,
     )
 
-  def add(self, *args, lstm_states: RNNStates, pred_actions, **kwargs) -> None:
+  def add(
+      self, *args, lstm_states: RNNStates, pred_actions, pure_rews, **kwargs
+  ) -> None:
     """
     :param hidden_states: LSTM cell and hidden state
     """
@@ -535,6 +538,7 @@ class MOABuffer(RolloutBuffer):
     )
     self.cell_states_moa[self.pos] = np.array(lstm_states.moa[1].cpu().numpy())
     self.pred_actions[self.pos] = np.array(pred_actions)
+    self.pure_rews[self.pos] = np.array(pure_rews)
 
     super().add(*args, **kwargs)
 
@@ -661,6 +665,7 @@ class MOABuffer(RolloutBuffer):
         old_log_prob=self.pad_and_flatten(self.log_probs[[batch_inds], agent]),
         advantages=self.pad_and_flatten(self.advantages[[batch_inds], agent]),
         returns=self.pad_and_flatten(self.returns[[batch_inds], agent]),
+        pure_rews=self.pad_and_flatten(self.pure_rews[[batch_inds], agent]),
         lstm_states=RNNStates(lstm_states_ac, lstm_states_moa),
         pred_actions=self.pad(self.pred_actions[[batch_inds], agent]),
         episode_starts=self.pad_and_flatten(self.episode_starts),

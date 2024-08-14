@@ -353,8 +353,6 @@ class MOAPolicy(ActorCriticPolicy):
 
     return marginal_probs
 
-  # TODO: probably should add something like a predict moa Method, for calculating
-  # the influence reward!
   def predict_values(
       self,
       obs: th.Tensor,

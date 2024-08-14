@@ -192,7 +192,7 @@ class MOAPPO(OnPolicyAlgorithm):
           self.n_envs,
           ac_lstm.hidden_size,
       )
-      # TODO: include in new Bufferclass
+
       moa_hidden_state_buffer_shape = (
           self.n_steps,
           moa_lstm.num_layers,
@@ -311,6 +311,7 @@ class MOAPPO(OnPolicyAlgorithm):
           )
 
       new_obs, rewards, dones, _, infos = env.step(clipped_actions)
+      pure_rews = rewards.copy()
       rewards = np.add(rewards, inf_rews)
       # normalize rewards: NOTE: we assume that inf_rews are normalized, because
       # used to calculate them are all normalized, TODO: this needs to be tested
@@ -322,12 +323,7 @@ class MOAPPO(OnPolicyAlgorithm):
       if not callback.on_step():
         return False
 
-      self._update_info_buffer(
-          infos, dones
-      )  # is this necessary for individual agents?
-      # what kind of inforomation do dones and infos contain?
-      # what happens to them in the info_buffer?
-      # TODO: analyse infos and dones, as well as the function of info buffer
+      self._update_info_buffer(infos, dones)
 
       n_steps += 1
 
@@ -359,10 +355,8 @@ class MOAPPO(OnPolicyAlgorithm):
                 terminal_obs, terminal_lstm_states, episode_starts
             )[0]
           rewards[idx] += self.gamma * terminal_value
+          pure_rews[idx] += self.gamma * terminal_value
 
-      # TODO: adjust this based on the new type of buffer (collect moa-logits in List/Tensor,
-      #       either make a loop to handle multiple buffers or handle different agents in one
-      #       adjusted buffer)
       rollout_buffer.add(
           self._last_obs,
           agent_actions,
@@ -372,6 +366,7 @@ class MOAPPO(OnPolicyAlgorithm):
           agent_log_probs,
           lstm_states=self._last_lstm_states,
           pred_actions=agents_pred_acts,
+          pure_rews=pure_rews,
       )
 
       self._last_obs_agents = new_obs
@@ -393,9 +388,8 @@ class MOAPPO(OnPolicyAlgorithm):
             )
         )
 
-    # TODO: adjust this based on the new type of buffer
     rollout_buffer.compute_returns_and_advantage(
-        last_values=agent_values, dones=dones
+        last_values=agent_values, dones=dones, num_agents=self.num_agents
     )
 
     callback.on_rollout_end()
@@ -414,77 +408,65 @@ class MOAPPO(OnPolicyAlgorithm):
 
     # Compute current clip range
     clip_range = self.clip_range(self._current_progress_remaining)
-    # Optional: clip range for the value function
-    # TODO: adjust for ac+moa model. Maybe clip_range_moa instead of vf?
+    # NOTE: this does not directly relate to the way the actor-critic model is build
     if self.clip_range_vf is not None:
       clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
 
-    # TODO: structures needed for logging
+    # for logging
+    entropy_losses = []
+    pg_losses, value_losses = [], []
+    moa_losses = []
+    clip_fractions = []
 
-    # TODO: either make this dependent on a mean kl_div or make a
-    #       dict to decide continue training based on all agents
+    # NOTE: individual training is dependent on the individual kl_div
+    #       training in general is dependent on the mean kl_div between all agents
+    #       it is possible that the coefficients for the target_kl must be adjusted
+    #       appropriately
     continue_training = True
 
     for epoch in range(self.n_epochs):
       mean_approx_kl_divs = []
-      # Do a complete pass on the rollout buffer
-      # TODO: we leave it at one buffer and handle multiple
-      #       agents internally, so this will be encapsuled in a for loop
-      #       that iterates over the agent indices. Maybe this will be where we
-      #       need to handle the multiple envs
+      # Do a complete pass on the rollout buffer (decentralized - for each agent one indiviual pass!)
 
-      for rollout_data in self.rollout_buffer.get(self.batch_size):
-        # no need to adapt here: in any case we should get aan agent-keyed
-        # dict with all actions
-        actions = rollout_data.actions
-        if isinstance(self.action_space, spaces.Discrete):
-          # convert discrete actions from float to long
-          actions = rollout_data.actions.long().flatten()
+      loss = []
+      current_approx_kl_divs = []
 
-        # convert mask from float to bool
-        mask = rollout_data.mask > 1e-8
+      for agent in range(self.num_agents):
+        for rollout_data in self.rollout_buffer.get(agent, self.batch_size):
+          # no need to adapt here: in any case we should get aan agent-keyed
+          # dict with all actions
+          actions = rollout_data.actions
+          if isinstance(self.action_space, spaces.Discrete):
+            # convert discrete actions from float to long
+            actions = rollout_data.actions.long().flatten()
 
-        # TODO: if we use multiple buffers we won't need to iterate over the agents here
-        # from here on out, every instance of the three dicts below, would need to be adapted
-        # to not be a dict and instead always be the specific value for the agent we are
-        # currently handling
-        values = []
-        log_prob = []
-        entropy = []
-        # Re-sample the noise matrix because the log_std has changed
-        for agent in range(self.num_agents):
+          # convert mask from float to bool
+          mask = rollout_data.mask > 1e-8
+
+          # Re-sample the noise matrix because the log_std has changed
           if self.use_sde:
             self.agents_policies[agent].reset_noise(self.batch_size)
 
-          # TODO: if we use multiple buffers, we won't get dicts here either
-          new_value, new_log_prob, new_entropy = self.agents_policies[
+          value, log_prob, entropy = self.agents_policies[
               agent
           ].evaluate_actions(
-              rollout_data.observation[agent],
-              actions[agent],
-              rollout_data.lstm_states[agent],
-              rollout_data.episode_starts[agent],
-          )
-          values.append(new_value)
-          log_prob.append(new_log_prob)
-          entropy.append(new_entropy)
-
-          values[agent] = values[agent].flatten()
-
-        # Normalize advantage
-        advantages = rollout_data.advantages
-        if self.normalize_advantage:
-          advantages = (advantages - advantages[mask].mean) / (
-              advantages[mask].std() + 1e-8
+              rollout_data.observation,
+              actions,
+              rollout_data.lstm_states,
+              rollout_data.episode_starts,
           )
 
-        # ratio between old and new policy, should be 1 at the first iteration
-        # TODO: adapt according to buffer and necessaty of list in this context,
-        #       possibly depending on the usage of one or multiple buffers
-        loss = []
-        current_approx_kl_divs = []
-        for agent in range(self.num_agents):
-          ratio = th.exp(log_prob[agent] - rollout_data.old_log_prob)
+          value = value.flatten()
+
+          # NOTE: maybe we need to inspect the shape of advantages, as it only refers to one agents
+          #       adaluzeantages
+          advantages = rollout_data.advantages
+          if self.normalize_advantage:
+            advantages = (advantages - advantages[mask].mean) / (
+                advantages[mask].std() + 1e-8
+            )
+
+          ratio = th.exp(log_prob - rollout_data.old_log_prob)
 
           # clipped surrogate loss
           policy_loss_1 = advantages * ratio
@@ -493,16 +475,20 @@ class MOAPPO(OnPolicyAlgorithm):
           )
           policy_loss = -th.mean(th.min(policy_loss_1, policy_loss_2)[mask])
 
-          # TODO: Logging
+          pg_losses.append(policy_loss.item())
+          clip_fraction = th.mean(
+              (th.abs(ratio - 1) > clip_range).float()
+          ).item()
+          clip_fractions.append(clip_fraction)
 
           if self.clip_range_vf is None:
             # No clipping
-            values_pred = values[agent]
+            values_pred = value
           else:
             # Clip the difference between old and new value
             # NOTE: this depends on the reward scaling
-            values_pred = rollout_data.old_values[agent] + th.clamp(
-                values[agent] - rollout_data.old_values[agent],
+            values_pred = rollout_data.old_values + th.clamp(
+                value - rollout_data.old_values,
                 -clip_range_vf,
                 clip_range_vf,
             )
@@ -510,23 +496,25 @@ class MOAPPO(OnPolicyAlgorithm):
           # Value loss using the TD(gae_lambda) target
           # Mask padded sequences
           value_loss = th.mean(
-              ((rollout_data.returns[agent] - values_pred) ** 2)[mask]
+              ((rollout_data.returns - values_pred) ** 2)[mask]
           )
 
-          # TODO:Logging
+          value_losses.append(value_loss.item())
 
           # Entropy loss favor exploration
           if entropy is None:
             # Approximate entropy when no analytical form
-            entropy_loss = -th.mean(-log_prob[mask])
+            entropy_loss = -th.mean(-log_prob)
           else:
             entropy_loss = -th.mean(entropy[mask])
 
-          # TODO: Logging
+          entropy_losses.append(entropy_loss.item())
 
           moa_loss = self.agents_policies[agent].calc_moa_loss(
               rollout_data.pred_actions, rollout_data.actions
-          )  # TODO: add moa_logits to rolloutbuffer
+          )
+
+          moa_losses.append(moa_loss.item())
 
           loss.append(
               policy_loss
@@ -537,20 +525,33 @@ class MOAPPO(OnPolicyAlgorithm):
 
           with th.no_grad():
             log_ratio = log_prob - rollout_data.old_log_prob
-            current_approx_kl_divs.append(
+            approx_kl_div = (
                 th.mean(((th.exp(log_ratio) - 1) - log_ratio)[mask])
                 .cpu()
                 .numpy()
             )
+            current_approx_kl_divs.append(approx_kl_div)
 
+          # check if target kl is reached for individual agent:
+          if (
+              self.target_kl is not None
+              and approx_kl_div > 1.5 * self.target_kl
+          ):
+            # stop training for current agent
+            break
+
+        # calculate mean kl_div to decide if training should be finished for now
         with th.no_grad():
           cur_mean_approx_kl_div = np.mean(current_approx_kl_divs)
+          # for logging
           mean_approx_kl_divs.append(cur_mean_approx_kl_div)
 
+        # has mean kl_div reached target_kl?
         if (
             self.target_kl is not None
             and cur_mean_approx_kl_div > 1.5 * self.target_kl
         ):
+          # stop training alltogether
           continue_training = False
           if self.verbose >= 1:
             print(
@@ -574,4 +575,37 @@ class MOAPPO(OnPolicyAlgorithm):
 
     self._n_updates += self.n_epochs
 
-    # TODO: logging
+    self.logger.record("train/entropy_loss", np.mean(entropy_losses))
+    self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
+    self.logger.record("train/value_loss", np.mean(value_losses))
+    self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
+    self.logger.record("train/clip_fraction", np.mean(clip_fractions))
+    self.logger.record("train/loss", loss.item())
+    self.logger.record("train/explained_variance", explained_var)
+    if hasattr(self.policy, "log_std"):
+      self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
+
+    self.logger.record(
+        "train/n_updates", self._n_updates, exclude="tensorboard"
+    )
+    self.logger.record("train/clip_range", clip_range)
+    if self.clip_range_vf is not None:
+      self.logger.record("train/clip_range_vf", clip_range_vf)
+
+  def learn(
+      self,
+      total_timesteps: int,
+      callback: MaybeCallback = None,
+      log_interval: int = 1,
+      tb_log_name: str = "MOAPPO",
+      reset_num_timesteps: bool = True,
+      progress_bar: bool = False,
+  ):
+    return super().learn(
+        total_timesteps=total_timesteps,
+        callback=callback,
+        log_interval=log_interval,
+        tb_log_name=tb_log_name,
+        reset_num_timesteps=reset_num_timesteps,
+        progress_bar=progress_bar,
+    )
