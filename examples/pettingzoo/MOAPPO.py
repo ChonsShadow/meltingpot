@@ -574,11 +574,15 @@ class MOAPPO(OnPolicyAlgorithm):
         break
 
     self._n_updates += self.n_epochs
+    explained_var = explained_variance(
+        self.rollout_buffer.values.flatten(),
+        self.rollout_buffer.returns.flatten(),
+    )
 
     self.logger.record("train/entropy_loss", np.mean(entropy_losses))
     self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
     self.logger.record("train/value_loss", np.mean(value_losses))
-    self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
+    self.logger.record("train/approx_kl", np.mean(current_approx_kl_divs))
     self.logger.record("train/clip_fraction", np.mean(clip_fractions))
     self.logger.record("train/loss", loss.item())
     self.logger.record("train/explained_variance", explained_var)
