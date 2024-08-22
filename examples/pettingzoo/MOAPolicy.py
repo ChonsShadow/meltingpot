@@ -53,7 +53,6 @@ class MOAPolicy(ActorCriticPolicy):
       action_space: spaces.Space,
       lr_schedule: Schedule,
       num_other_agents,
-      influence_only_when_visible,
       div_measure="kl",
       net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
       fc_activation_fn: Type[nn.Module] = nn.Tanh,
@@ -70,19 +69,21 @@ class MOAPolicy(ActorCriticPolicy):
       normalize_images: bool = True,
       optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
       optimizer_kwargs: Optional[Dict[str, Any]] = None,
+      num_frames=4,
       cell_size=128,  # standardvalue taken from ssd-games
   ):
     self.conv_activation_fn = conv_activation_fn
     self.cell_size = cell_size
     self.num_other_agents = num_other_agents
-    self.influence_only_when_visible = influence_only_when_visible
     self.num_actions = get_action_dim(action_space)
     self.prev_action = []
     self.div_measure = div_measure
     self.influence_reward = None
     self.prev_act_logits = None
+    self.num_frames = num_frames
+    self.prev_obs = None
 
-    super.__init__(
+    super().__init__(
         observation_space,
         action_space,
         lr_schedule,
@@ -110,7 +111,7 @@ class MOAPolicy(ActorCriticPolicy):
     #       net_arch here is an empty list and mlp_extractor does not
     #       really contain any layers (acts like an identity module).
     self.mlp_extractor = layers.MOAMlp(
-        self.features_dim,
+        self.num_frames,
         self.net_arch,
         self.conv_activation_fn,
         self.activation_fn,
@@ -124,6 +125,7 @@ class MOAPolicy(ActorCriticPolicy):
     )
 
   def _build_moa_lstm(self, in_size, num_outputs, num_actions):
+    self.pred_action_size = num_outputs
     self.moa_lstm = layers.MOALSTM(
         in_size, num_outputs, num_actions, self.cell_size
     )
@@ -166,11 +168,12 @@ class MOAPolicy(ActorCriticPolicy):
           f"Unsupported distribution '{self.action_dist}'."
       )
 
+    moa_lstm_out_size = self.num_other_agents * self.num_actions
+
     self._build_moa_lstm(
-        self.mlp_extractor.get_moa_out_dim,
-        self.num_other_agents * self.num_actions,
+        self.mlp_extractor.get_moa_out_dim(),
+        moa_lstm_out_size,
         self.num_actions,
-        self.cell_size,
     )
 
     # Init weights: use orthogonal initialization
@@ -200,15 +203,13 @@ class MOAPolicy(ActorCriticPolicy):
         self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
     )
 
-  def get_counterfacts(
-      self, features, other_agents_acts, lstm_states, episode_starts
-  ):
+  def get_counterfacts(self, other_agents_acts, lstm_states, episode_starts):
     counterfactual_preds = []
     for i in range(self.num_actions):
       actions_with_counterfactual = nn.functional.pad(
           other_agents_acts, (0, 1), mode="constant", value=i
       )
-      moa_features = th.cat([features, actions_with_counterfactual])
+      moa_features = th.cat([self.prev_obs, actions_with_counterfactual])
       counterfact_pred, _ = self.moa_lstm.forward(
           moa_features, lstm_states, episode_starts
       )
@@ -220,14 +221,12 @@ class MOAPolicy(ActorCriticPolicy):
   def forward(
       self,
       obs,
-      own_action,
-      actions,
       lstm_states: RNNStates,
       episode_starts,
-      deterministic,
-      prev_obs,
       prev_acts,
+      own_act_idx,
       prev_episode_starts,
+      deterministic=False,
   ):
     """
     Forward pass in all the networks (actor, critic and moa)
@@ -239,31 +238,38 @@ class MOAPolicy(ActorCriticPolicy):
     :param deterministic: Whether to sample or use deterministic actions
     :return: action, value and log probability of the action
     """
-    features = self.extract_features(obs)
 
-    latent_ac, latent_moa = self.mlp_extractor.forward(features)
+    latent_ac, latent_moa = self.mlp_extractor.forward(obs)
+
     latent_pi, value, new_ac_lstm_states = self.ac_lstm.forward(
         latent_ac, lstm_states.ac, episode_starts
     )
 
-    flattened_acts = th.flatten(actions)
-    moa_features = th.cat([latent_moa, flattened_acts])
-    pred_actions, new_moa_lstm_states = self.moa_lstm.forward(
-        moa_features, lstm_states.moa, episode_starts
-    )
+    new_moa_lstm_states = lstm_states.moa
+    inf_rew = 0
+    pred_actions = th.zeros(self.num_actions)
 
-    counterfacts = self.get_counterfacts(
-        prev_obs, prev_acts, lstm_states.moa, prev_episode_starts
-    )
+    if self.prev_obs is not None:
+      flattened_acts = th.flatten(prev_acts)
+      moa_features = th.cat([latent_moa, flattened_acts])
+      pred_actions, new_moa_lstm_states = self.moa_lstm.forward(
+          moa_features, lstm_states.moa, episode_starts
+      )
 
-    counterfacts = th.reshape(
-        counterfacts, [-1, counterfacts.shape(-2), counterfacts.shape(-1)]
-    )
+      own_prev_act = prev_acts.pop(own_act_idx)
 
-    inf_rew = self.calc_influence_reward(self.prev_act_logits, counterfacts)
+      counterfacts = self.get_counterfacts(
+          prev_acts, lstm_states.moa, prev_episode_starts
+      )
 
-    self.prev_action = own_action
-    self.prev_act_logits = pred_actions
+      counterfacts = th.reshape(
+          counterfacts, [-1, counterfacts.shape(-2), counterfacts.shape(-1)]
+      )
+
+      inf_rew = self.calc_influence_reward(self.prev_act_logits, counterfacts)
+
+      self.prev_action = own_prev_act
+      self.prev_act_logits = pred_actions
 
     action_dist = self._get_action_dist_from_latent(latent_pi)
     actions = action_dist.get_actions(deterministic=deterministic)
@@ -368,8 +374,7 @@ class MOAPolicy(ActorCriticPolicy):
         or not (we reset the lstm states in that case).
     :return: the estimated values.
     """
-    features = self.extract_features(obs)
-    latent_ac, _ = self.mlp_extractor.forward(features)
+    latent_ac, _ = self.mlp_extractor.forward(obs)
     _, value, _ = self.ac_lstm.forward(latent_ac, lstm_states, episode_starts)
 
     return value
@@ -431,6 +436,9 @@ class MOAPolicy(ActorCriticPolicy):
     # There cannot be a prediction at t=-1 as well as there won't be an action after
     # the last batch, so we remove the first and last predictions to have only
     # predictions for sensible data
+    # TODO: this isn't quite true in our implementation, adapt this to the fact that
+    # we calculate the MOA_loss in batches
+    #
     action_logits = pred_actions[1:-1, :, :]
 
     # We need to adapt the shape of true_actions, so it fits action_logits

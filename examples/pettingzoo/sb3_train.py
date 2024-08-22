@@ -16,7 +16,6 @@
 
 import gymnasium as gym
 from meltingpot import substrate
-import stable_baselines3
 from stable_baselines3.common import callbacks
 from stable_baselines3.common import torch_layers
 from stable_baselines3.common import vec_env
@@ -24,6 +23,8 @@ import supersuit as ss
 import torch
 from torch import nn
 import torch.nn.functional as F
+from MOAPolicy import MOAPolicy
+from MOAPPO import MOAPPO
 
 import utils
 
@@ -102,8 +103,7 @@ def main():
   features_dim = 128
   fcnet_hiddens = [1024, 128]  # Two hidden layers for cnn extractor
   ent_coef = 0.001  # entropy coefficient in loss
-  batch_size = (rollout_len * num_envs // 2
-               )  # This is from the rllib baseline implementation
+  batch_size = 128  # This is from the rllib baseline implementation
   lr = 0.0001
   n_epochs = 30
   gae_lambda = 1.0
@@ -119,8 +119,8 @@ def main():
   )
   env = ss.observation_lambda_v0(env, lambda x, _: x["RGB"], lambda s: s["RGB"])
   env = ss.frame_stack_v1(env, num_frames) # stacks environments, so agents work in multiple env simultaniously
-                                           # actions, observations, rewards and other env-agent-specific vars become
-                                           # vectors
+  # actions, observations, rewards and other env-agent-specific vars become
+  # vectors
   env = ss.pettingzoo_env_to_vec_env_v1(env)
   env = ss.concat_vec_envs_v1(             # does not alter step()
       env,
@@ -145,20 +145,22 @@ def main():
   eval_freq = 100000 // (num_envs * num_agents)
 
   policy_kwargs = dict(
+      num_frames=num_frames,
       features_extractor_class=CustomCNN,
       features_extractor_kwargs=dict(
           features_dim=features_dim,
           num_frames=num_frames,
           fcnet_hiddens=fcnet_hiddens,
       ),
-      net_arch=[features_dim],
+      net_arch={"conv": [(12, 13), (24, 11), (24, 7), (1, 3)]},
   )
 
   tensorboard_log = "./results/sb3/harvest_open_ppo_paramsharing"
 
-  model = stable_baselines3.PPO(
-      "CnnPolicy",
+  model = MOAPPO(
+      MOAPolicy,
       env=env,
+      num_agents=num_agents,
       learning_rate=lr,
       n_steps=rollout_len,
       batch_size=batch_size,
@@ -173,7 +175,7 @@ def main():
       verbose=verbose,
   )
   if model_path is not None:
-    model = stable_baselines3.PPO.load(model_path, env=env)
+    model = MOAPPO.load(model_path, env=env)
   eval_callback = callbacks.EvalCallback(
       eval_env, eval_freq=eval_freq, best_model_save_path=tensorboard_log)
   model.learn(total_timesteps=total_timesteps, callback=eval_callback)
@@ -181,7 +183,7 @@ def main():
   logdir = model.logger.dir
   model.save(logdir + "/model")
   del model
-  stable_baselines3.PPO.load(logdir + "/model")
+  MOAPPO.load(logdir + "/model")
 
 
 if __name__ == "__main__":

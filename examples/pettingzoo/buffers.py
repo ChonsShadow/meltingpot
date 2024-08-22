@@ -526,17 +526,30 @@ class MOABuffer(RolloutBuffer):
     )
 
   def add(
-      self, *args, lstm_states: RNNStates, pred_actions, pure_rews, **kwargs
+      self,
+      *args,
+      lstm_states: RNNStates,
+      num_agents,
+      pred_actions,
+      pure_rews,
+      **kwargs
   ) -> None:
     """
     :param hidden_states: LSTM cell and hidden state
     """
-    self.hidden_states_ac[self.pos] = np.array(lstm_states.ac[0].cpu().numpy())
-    self.cell_states_ac[self.pos] = np.array(lstm_states.ac[1].cpu().numpy())
-    self.hidden_states_moa[self.pos] = np.array(
-        lstm_states.moa[0].cpu().numpy()
-    )
-    self.cell_states_moa[self.pos] = np.array(lstm_states.moa[1].cpu().numpy())
+    for agent in range(num_agents):
+      self.hidden_states_ac[self.pos][agent] = np.array(
+          lstm_states[agent].ac[0].cpu().numpy()
+      )
+      self.cell_states_ac[self.pos][agent] = np.array(
+          lstm_states[agent].ac[1].cpu().numpy()
+      )
+      self.hidden_states_moa[self.pos][agent] = np.array(
+          lstm_states[agent].moa[0].cpu().numpy()
+      )
+      self.cell_states_moa[self.pos][agent] = np.array(
+          lstm_states[agent].moa[1].cpu().numpy()
+      )
     self.pred_actions[self.pos] = np.array(pred_actions)
     self.pure_rews[self.pos] = np.array(pure_rews)
 
@@ -554,10 +567,10 @@ class MOABuffer(RolloutBuffer):
       # hidden_state_shape = (self.n_steps, lstm.num_layers, self.n_envs, lstm.hidden_size)
       # swap first to (self.n_steps, self.n_envs, lstm.num_layers, lstm.hidden_size)
       for tensor in [
-          "hidden_states_pi",
-          "cell_states_pi",
-          "hidden_states_vf",
-          "cell_states_vf",
+          "hidden_states_ac",
+          "cell_states_ac",
+          "hidden_states_moa",
+          "cell_states_moa",
       ]:
         self.__dict__[tensor] = self.__dict__[tensor].swapaxes(1, 2)
 
@@ -571,10 +584,10 @@ class MOABuffer(RolloutBuffer):
           "log_probs",
           "advantages",
           "returns",
-          "hidden_states_pi",
-          "cell_states_pi",
-          "hidden_states_vf",
-          "cell_states_vf",
+          "hidden_states_ac",
+          "cell_states_ac",
+          "hidden_states_moa",
+          "cell_states_moa",
           "episode_starts",
       ]:
         self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
@@ -588,8 +601,8 @@ class MOABuffer(RolloutBuffer):
     # more complexity and use of padding
     # Trick to shuffle a bit: keep the sequence order
     # but split the indices in two
-    split_index = np.random.randint(self.buffer_size * self.n_envs)
-    indices = np.arange(self.buffer_size * self.n_envs)
+    split_index = np.random.randint(self.buffer_size)
+    indices = np.arange(self.buffer_size)
     indices = np.concatenate((indices[split_index:], indices[:split_index]))
 
     env_change = np.zeros(self.buffer_size * self.n_envs).reshape(
@@ -618,6 +631,7 @@ class MOABuffer(RolloutBuffer):
         self.episode_starts[batch_inds], env_change[batch_inds], self.device
     )
 
+    # TODO: fix padded batch size to fit the shape of the nd-arrays
     # Number of sequences
     n_seq = len(self.seq_start_indices)
     max_length = self.pad(self.actions[batch_inds]).shape[1]
@@ -628,19 +642,19 @@ class MOABuffer(RolloutBuffer):
         # 1. (n_envs * n_steps, n_layers, dim) -> (batch_size, n_layers, dim)
         # 2. (batch_size, n_layers, dim)  -> (n_seq, n_layers, dim)
         # 3. (n_seq, n_layers, dim) -> (n_layers, n_seq, dim)
-        self.hidden_states_pi[[batch_inds], agent][
+        self.hidden_states_ac[[batch_inds], agent][
             self.seq_start_indices
         ].swapaxes(0, 1),
-        self.cell_states_pi[[batch_inds], agent][
+        self.cell_states_ac[[batch_inds], agent][
             self.seq_start_indices
         ].swapaxes(0, 1),
     )
     lstm_states_moa = (
         # (n_envs * n_steps, n_layers, dim) -> (n_layers, n_seq, dim)
-        self.hidden_states_vf[[batch_inds], agent][
+        self.hidden_states_moa[[batch_inds], agent][
             self.seq_start_indices
         ].swapaxes(0, 1),
-        self.cell_states_vf[[batch_inds], agent][
+        self.cell_states_moa[[batch_inds], agent][
             self.seq_start_indices
         ].swapaxes(0, 1),
     )

@@ -129,11 +129,9 @@ class MOAPPO(OnPolicyAlgorithm):
     self._last_lstm_states = None
     self.num_agents = num_agents
     self.agent_lables = []
-    self._last_obs_agents = []
     self.moa_coef = moa_coef
-
-    for i in range(num_agents):
-      self._last_obs_agents.append(None)
+    self.prev_acts = None
+    self.prev_episode_starts = None
 
     if _init_setup_model:
       self._setup_model()
@@ -153,23 +151,24 @@ class MOAPPO(OnPolicyAlgorithm):
               self.observation_space,
               self.action_space,
               self.lr_schedule,
+              self.num_agents - 1,
               use_sde=self.use_sde,
               **self.policy_kwargs,
           )
       )
       self.agents_policies[agent].to(self.device)
       # the lstms have different purposes, thus they surely may have different architectures
-      ac_lstm = self.agents_policies[agent].ac_lstm
-      moa_lstm = self.agents_policies[agent].moa_lstm
+      ac_lstm = self.agents_policies[agent].ac_lstm.lstm
+      moa_lstm = self.agents_policies[agent].moa_lstm.lstm
 
       ac_single_hidden_state_shape = (
           ac_lstm.num_layers,
-          self.n_envs,
+          int(self.n_envs / self.num_agents),
           ac_lstm.hidden_size,
       )
       moa_single_hidden_state_shape = (
           moa_lstm.num_layers,
-          self.n_envs,
+          int(self.n_envs / self.num_agents),
           moa_lstm.hidden_size,
       )
       # states for ac und moa lstms:
@@ -188,15 +187,17 @@ class MOAPPO(OnPolicyAlgorithm):
 
       ac_hidden_state_buffer_shape = (
           self.n_steps,
+          self.num_agents,
           ac_lstm.num_layers,
-          self.n_envs,
+          int(self.n_envs / self.num_agents),
           ac_lstm.hidden_size,
       )
 
       moa_hidden_state_buffer_shape = (
           self.n_steps,
+          self.num_agents,
           moa_lstm.num_layers,
-          self.n_envs,
+          int(self.n_envs / self.num_agents),
           moa_lstm.hidden_size,
       )
 
@@ -277,11 +278,17 @@ class MOAPPO(OnPolicyAlgorithm):
 
         with th.no_grad():
           # Convert to pytorch tensor or to TensorDict
-          obs_tensor = obs_as_tensor(self._last_obs_agents[agent], self.device)
+          obs_tensor = th.as_tensor(
+              self._last_obs[agent], dtype=th.float32, device=self.device
+          )
           episode_starts = th.tensor(
-              self._last_episode_starts, dtype=th.float32, device=self.device
+              self._last_episode_starts[agent],
+              dtype=th.float32,
+              device=self.device,
           )
 
+          # TODO: we need to get the feature tensor from forward to save them as last_obs!
+          # TODO: detangle
           (
               new_actions,
               values,
@@ -289,8 +296,13 @@ class MOAPPO(OnPolicyAlgorithm):
               pred_actions,
               new_lstm_states,
               inf_rew,
-          ) = self.policy.forward(
-              obs_tensor, lstm_states[agent], episode_starts
+          ) = self.agents_policies[agent].forward(
+              obs_tensor,
+              lstm_states[agent],
+              episode_starts,
+              self.prev_acts,
+              agent,
+              self.prev_episode_starts,
           )
 
           new_actions = new_actions.cpu().numpy()
@@ -310,7 +322,12 @@ class MOAPPO(OnPolicyAlgorithm):
               self.action_space.high,
           )
 
-      new_obs, rewards, dones, _, infos = env.step(clipped_actions)
+      agent_actions = np.concatenate(agent_actions).ravel()
+      clipped_actions = np.concatenate(clipped_actions).ravel()
+      agent_values = th.cat(agent_values, dim=0)
+      agent_log_probs = th.stack(agent_log_probs, dim=0).flatten()
+
+      new_obs, rewards, dones, infos = env.step(clipped_actions)
       pure_rews = rewards.copy()
       rewards = np.add(rewards, inf_rews)
       # normalize rewards: NOTE: we assume that inf_rews are normalized, because
@@ -359,17 +376,21 @@ class MOAPPO(OnPolicyAlgorithm):
 
       rollout_buffer.add(
           self._last_obs,
-          agent_actions,
+          th.from_numpy(agent_actions),
           rewards,
           self._last_episode_starts,
           agent_values,
           agent_log_probs,
           lstm_states=self._last_lstm_states,
+          num_agents=self.num_agents,
           pred_actions=agents_pred_acts,
           pure_rews=pure_rews,
       )
 
-      self._last_obs_agents = new_obs
+      self.prev_acts = th.from_numpy(agent_actions)
+      # TODO: come up with better names...
+      self.prev_episode_starts = self._last_episode_starts
+      self._last_obs = new_obs
       self._last_episode_starts = dones
       self._last_lstm_states = lstm_states
 
@@ -382,7 +403,9 @@ class MOAPPO(OnPolicyAlgorithm):
         )
         agent_values.append(
             self.agents_policies[agent].predict_values(
-                obs_as_tensor(new_obs, self.device),
+                th.as_tensor(
+                    new_obs[agent], dtype=th.float32, device=self.device
+                ),
                 lstm_states[agent].ac,
                 episode_starts,
             )

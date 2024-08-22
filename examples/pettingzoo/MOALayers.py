@@ -34,23 +34,25 @@ class MOAMlp(nn.Module):
 
   def __init__(
       self,
-      feature_dim: int,
+      raw_in: int,
       net_arch: Dict[str, List],
       conv_activation_fn: Type[nn.Module],
       ac_activation_fn: Type[nn.Module],
       moa_activation_fn: Type[nn.Module],
       device: Union[th.device, str] = "auto",
   ) -> None:
-    super.__init__()
+    super().__init__()
     device = get_device(device)
 
     conv_net_arch = net_arch.get("conv", None)
     ac_net_arch = net_arch.get("ac", None)
     moa_net_arch = net_arch.get("moa", None)
 
-    self.conv_layers, conv_out_dim = self.build_conv_layers(
-        feature_dim, conv_net_arch, activation_fn=conv_activation_fn
+    self.features_extractor, conv_out_dim = self.build_conv_layers(
+        raw_in * 3, conv_net_arch, activation_fn=conv_activation_fn
     )
+
+    conv_out_dim = 3364
 
     self.ac_fc_layers, self.ac_out_dim = self.build_fc_layers(
         conv_out_dim, ac_net_arch, activation_fn=ac_activation_fn
@@ -67,25 +69,28 @@ class MOAMlp(nn.Module):
     conv_layers = []
     for out_size, kernel_size in net_arch:
       conv_layers.append(nn.Conv2d(in_size, out_size, kernel_size))
-      conv_layers.append(activation_fn)
+      conv_layers.append(activation_fn())
       in_size = out_size
+    conv_layers.append(nn.Flatten())
 
-    return nn.Sequential(conv_layers), in_size
+    conv_layers = nn.Sequential(*conv_layers)
+    return conv_layers, in_size
 
   def build_fc_layers(self, in_size, out_sizes, activation_fn=nn.Tanh):
     if out_sizes == None:
-      out_sizes = [32, 32]
+      out_sizes = [2048, 512, 128]
 
     fc_layers = []
     for out_size in out_sizes:
-      fc_layers.append(nn.Conv2d(in_size, out_size))
-      fc_layers.append(activation_fn)
+      fc_layers.append(nn.Linear(in_size, out_size))
+      fc_layers.append(activation_fn())
       in_size = out_size
 
-    return nn.Sequential(fc_layers), in_size
+    return nn.Sequential(*fc_layers), in_size
 
   def forward(self, obs):
-    conv_output = self.conv_layers(obs)
+    obs = obs.permute(2, 0, 1)
+    conv_output = self.features_extractor(obs)
     return self.ac_fc_layers(conv_output), self.moa_fc_layers(conv_output)
 
   def get_ac_out_dim(self):
@@ -150,10 +155,9 @@ class ACLSTM(nn.Module):
     # Batch to sequence
     # (padded batch size, features_dim) -> (n_seq, max length, features_dim) -> (max length, n_seq, features_dim)
     # note: max length (max sequence length) is always 1 during data collection
-    features_sequence = features.reshape(
-        (n_seq, -1, self.lstm.input_size)
-    ).swapaxes(0, 1)
-    episode_starts = episode_starts.reshape((n_seq, -1)).swapaxes(0, 1)
+
+    features_sequence = features.reshape((n_seq, -1, self.lstm.input_size))
+    episode_starts = episode_starts.reshape((n_seq, -1))
 
     # If we don't have to reset the state in the middle of a sequence
     # we can avoid the for loop, which speeds up things
