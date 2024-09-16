@@ -81,7 +81,7 @@ class MOAPolicy(ActorCriticPolicy):
     self.influence_reward = None
     self.prev_act_logits = None
     self.num_frames = num_frames
-    self.prev_obs = None
+    self.prev_obs_moa = None
 
     super().__init__(
         observation_space,
@@ -127,7 +127,7 @@ class MOAPolicy(ActorCriticPolicy):
   def _build_moa_lstm(self, in_size, num_outputs, num_actions):
     self.pred_action_size = num_outputs
     self.moa_lstm = layers.MOALSTM(
-        in_size, num_outputs, num_actions, self.cell_size
+        in_size, num_outputs, num_actions, self.num_other_agents, self.cell_size
     )
 
   def _build(self, lr_schedule: Schedule) -> None:
@@ -168,7 +168,7 @@ class MOAPolicy(ActorCriticPolicy):
           f"Unsupported distribution '{self.action_dist}'."
       )
 
-    moa_lstm_out_size = self.num_other_agents * self.num_actions
+    moa_lstm_out_size = self.num_other_agents * self.action_space.n
 
     self._build_moa_lstm(
         self.mlp_extractor.get_moa_out_dim(),
@@ -204,12 +204,16 @@ class MOAPolicy(ActorCriticPolicy):
     )
 
   def get_counterfacts(self, other_agents_acts, lstm_states, episode_starts):
+
     counterfactual_preds = []
-    for i in range(self.num_actions):
+
+    # we know that meltingpot only uses discrete action spaces, so we can use
+    # action_space.n to get the number of possible actions
+    for i in range(self.action_space.n):
       actions_with_counterfactual = nn.functional.pad(
           other_agents_acts, (0, 1), mode="constant", value=i
       )
-      moa_features = th.cat([self.prev_obs, actions_with_counterfactual])
+      moa_features = th.cat([self.prev_obs_moa, actions_with_counterfactual])
       counterfact_pred, _ = self.moa_lstm.forward(
           moa_features, lstm_states, episode_starts
       )
@@ -246,34 +250,42 @@ class MOAPolicy(ActorCriticPolicy):
     )
 
     new_moa_lstm_states = lstm_states.moa
-    inf_rew = 0
+    inf_rew = th.zeros(self.num_other_agents)
     pred_actions = th.zeros(self.num_actions)
+    latent_moa = th.flatten(latent_moa)
 
-    if self.prev_obs is not None:
-      flattened_acts = th.flatten(prev_acts)
-      moa_features = th.cat([latent_moa, flattened_acts])
-      pred_actions, new_moa_lstm_states = self.moa_lstm.forward(
-          moa_features, lstm_states.moa, episode_starts
+    flattened_acts = th.flatten(prev_acts)
+    moa_features = th.cat([latent_moa, flattened_acts])
+    pred_actions, new_moa_lstm_states = self.moa_lstm.forward(
+        moa_features, lstm_states.moa, episode_starts
+    )
+
+    if self.prev_obs_moa is not None:
+
+      self.prev_action = prev_acts[own_act_idx]
+      prev_acts = th.cat(
+          [prev_acts[:own_act_idx], prev_acts[own_act_idx + 1 :]]
       )
-
-      own_prev_act = prev_acts.pop(own_act_idx)
 
       counterfacts = self.get_counterfacts(
           prev_acts, lstm_states.moa, prev_episode_starts
       )
 
       counterfacts = th.reshape(
-          counterfacts, [-1, counterfacts.shape(-2), counterfacts.shape(-1)]
+          counterfacts, [-1, counterfacts.shape[-2], counterfacts.shape[-1]]
       )
 
-      inf_rew = self.calc_influence_reward(self.prev_act_logits, counterfacts)
+      # TODO: run moa_lstm with 'empty' actions for prev_act_logits?
+      inf_rew = self.calc_influence_reward(
+          self.prev_act_logits, prev_acts, counterfacts
+      )
 
-      self.prev_action = own_prev_act
-      self.prev_act_logits = pred_actions
+    self.prev_act_logits = pred_actions
 
     action_dist = self._get_action_dist_from_latent(latent_pi)
     actions = action_dist.get_actions(deterministic=deterministic)
     log_prob = action_dist.log_prob(actions)
+    self.prev_obs_moa = latent_moa
 
     return (
         actions,
@@ -284,16 +296,19 @@ class MOAPolicy(ActorCriticPolicy):
         inf_rew,
     )
 
-  def calc_influence_reward(self, prev_action_logits, counterfactual_logits):
+  def calc_influence_reward(
+      self, prev_action_logits, prev_acts, counterfactual_logits
+  ):
     """
     Compute influence of this agent on other agents.
     :param prev_action_logits: Logits for the agent's own policy/actions at t-1
+    :prev_acts: the previous actions of all other agents
     :param counterfactual_logits: The counterfactual action logits for actions made by other
     agents at t.
     """
     # prev actions sollte basierend auf den Kommentaren in ssd die Aktionen des letzten
     # steps enthalten
-    prev_agent_actions = self.prev_action
+    prev_agent_actions = th.reshape(self.prev_action, [-1, 1, 1]).type(th.int32)
     softmax = th.nn.Softmax()
 
     predicted_logits = gather_nd(
@@ -301,7 +316,7 @@ class MOAPolicy(ActorCriticPolicy):
     )
 
     predicted_logits = th.reshape(
-        predicted_logits, [-1, self.num_other_agents, self.num_actions]
+        predicted_logits, [-1, self.num_other_agents, self.action_space.n]
     )
     predicted_logits = softmax(predicted_logits)
     predicted_logits = predicted_logits / th.sum(
@@ -342,12 +357,12 @@ class MOAPolicy(ActorCriticPolicy):
     # to [B, num_actions, num_other_agents, num_actions]
     counterfactual_logits = th.reshape(
         counterfactual_logits,
-        [-1, self.num_actions, self.num_other_agents, self.num_actions],
+        [-1, self.action_space.n, self.num_other_agents, self.action_space.n],
     )
     counterfactual_logits = softmax(counterfactual_logits)
 
     # Change shape to broadcast probability of each action over counterfactual actions
-    logits = th.reshape(logits, [-1, self.num_actions, 1, 1])
+    logits = th.reshape(logits, [-1, self.action_space.n, 1, 1])
 
     normalized_counterfacts = logits * counterfactual_logits
     # Remove counterfactual action dimension
@@ -392,9 +407,8 @@ class MOAPolicy(ActorCriticPolicy):
     :return: estimated value, log likelihood of taking those actions
         and entropy of the action distribution.
     """
-    features = self.extract_features(obs)
 
-    latent_ac, latent_moa = self.mlp_extractor.forward(features)
+    latent_ac, latent_moa = self.mlp_extractor.forward(obs)
     latent_pi, values, _ = self.ac_lstm.forward(
         latent_ac, lstm_states.ac, episode_starts
     )
@@ -423,8 +437,7 @@ class MOAPolicy(ActorCriticPolicy):
         pred_actions (th.Tensor): A Tensor containing the predicted actions for all agents
                                   for each timestep. Its dimensions are (B,N,A),
                                   where B is the number of timesteps, N the number of
-                                  agents and A the number of actions (probably
-                                  relating to the number of envs)
+                                  agents and A the number of actions
         true_actions (th.Tensor): A Tensor containing the true actions of each agent
                                   at each timestep. Its dimesnions are (B,N), where B
                                   is the number of timesteps (batchsize) and N the number
@@ -436,18 +449,22 @@ class MOAPolicy(ActorCriticPolicy):
     # There cannot be a prediction at t=-1 as well as there won't be an action after
     # the last batch, so we remove the first and last predictions to have only
     # predictions for sensible data
-    # TODO: this isn't quite true in our implementation, adapt this to the fact that
-    # we calculate the MOA_loss in batches
-    #
-    action_logits = pred_actions[1:-1, :, :]
+    # NOTE: ssd-games states, that pred actions doesn't contain sensible data,
+    # as the predictions are made at n-1 for n (in time). Which is why they remove the first
+    # element. This raises the question, as to why the prediction at timestep 0,
+    # or any timestep at the start of a pred_actions timestep, would contain no sensible
+    # data. The only possibility I can think of, is that the MOA-lstm has been fed
+    # imaginary actions as part of the features, because it expects previous actions, but there aren't any,
+    # which still wouldn't make the data non-sensible, in my opinion.
+    action_logits = pred_actions[:-1]
 
-    # We need to adapt the shape of true_actions, so it fits action_logits
+    # there aren't any logits for n=0, so we start at n=1 with the true actions
     # NOTE: ssd-games uses tf.cast() with tf.int32 on true_actions, though I currently
     #       don't see a good reason to do that as well
-    true_actions = true_actions[2:, :]
+    true_actions = true_actions[1:].reshape((-1, self.num_other_agents)).long()
 
     # compute the softmax cross_entropy
-    loss_layer = th.nn.CrossEntropyLoss()
+    loss_layer = th.nn.CrossEntropyLoss(reduction="none")
     ce_loss_per_entry = loss_layer(action_logits, true_actions)
 
     # NOTE: at this point ssd-games takes the visibility of agents for each other
@@ -456,3 +473,76 @@ class MOAPolicy(ActorCriticPolicy):
     total_loss = th.mean(ce_loss_per_entry) * loss_weight
 
     return total_loss, ce_loss_per_entry
+
+  def get_distribution(self, obs, lstm_states, episode_starts) -> Distribution:
+    """
+    Get the current policy distribution given the observations.
+
+    :param obs:
+    :return: the action distribution.
+    """
+    latent_ac = self.mlp_extractor.forward(obs)
+    latent_pi, _, new_ac_lstm_states = self.ac_lstm.forward(
+        latent_ac, lstm_states.ac, episode_starts
+    )
+    return self._get_action_dist_from_latent(latent_pi)
+
+  def predict(
+      self,
+      observation: Union[np.ndarray, Dict[str, np.ndarray]],
+      state: Optional[Tuple[np.ndarray, ...]] = None,
+      episode_start: Optional[np.ndarray] = None,
+      deterministic: bool = False,
+  ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
+    self.set_training_mode(False)
+
+    # Check for common mistake that the user does not mix Gym/VecEnv API
+    # Tuple obs are not supported by SB3, so we can safely do that check
+    if (
+        isinstance(observation, tuple)
+        and len(observation) == 2
+        and isinstance(observation[1], dict)
+    ):
+      raise ValueError(
+          "You have passed a tuple to the predict() function instead of a Numpy"
+          " array or a Dict. "
+          "You are probably mixing Gym API with SB3 VecEnv API: `obs, info ="
+          " env.reset()` (Gym) "
+          "vs `obs = vec_env.reset()` (SB3 VecEnv). "
+          "See related issue"
+          " https://github.com/DLR-RM/stable-baselines3/issues/1694 "
+          "and documentation for more information:"
+          " https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html#vecenv-api-vs-gym-api"
+      )
+
+    with th.no_grad():
+      actions = self._predict(observation, state, episode_start, deterministic)
+    actions = actions.cpu().numpy().reshape(self.action_space._shape)
+
+    if isinstance(self.action_space, spaces.Box):
+      if self.squash_output:
+        # Rescale to proper domain when using squashing
+        actions = self.unscale_action(actions)  # type: ignore[assignment, arg-type]
+      else:
+        # Actions could be on arbitrary scale, so clip the actions to avoid
+        # out of bound error (e.g. if sampling from a Gaussian distribution)
+        actions = np.clip(actions, self.action_space.low, self.action_space.high)  # type: ignore[assignment, arg-type]
+
+    # TODO: for the usage of multiple envs, the possibility of vectorized envs
+    #      must be handled here
+
+    return actions
+
+  def _predict(
+      self, observation, state, episode_start, deterministic
+  ) -> th.Tensor:
+    """
+    Get the action according to the policy for a given observation.
+
+    :param observation:
+    :param deterministic: Whether to use stochastic or deterministic actions
+    :return: Taken action according to the policy
+    """
+    return self.get_distribution(observation, state, episode_start).get_actions(
+        deterministic=deterministic
+    )

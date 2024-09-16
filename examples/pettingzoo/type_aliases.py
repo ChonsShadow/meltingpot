@@ -36,10 +36,12 @@ class RecurrentDictRolloutBufferSamples(NamedTuple):
 class MoaRolloutBufferSamples(NamedTuple):
   observations: th.Tensor
   actions: th.Tensor
+  others_acts: th.Tensor
   old_values: th.Tensor
   old_log_prob: th.Tensor
   advantages: th.Tensor
   returns: th.Tensor
+  pure_rews: th.Tensor
   lstm_states: RNNStates
   pred_actions: th.Tensor
   episode_starts: th.Tensor

@@ -89,7 +89,10 @@ class MOAMlp(nn.Module):
     return nn.Sequential(*fc_layers), in_size
 
   def forward(self, obs):
-    obs = obs.permute(2, 0, 1)
+    if obs.dim() == 3:
+      obs = obs.permute(2, 0, 1)
+    else:
+      obs = obs.permute(0, 3, 1, 2)
     conv_output = self.features_extractor(obs)
     return self.ac_fc_layers(conv_output), self.moa_fc_layers(conv_output)
 
@@ -152,12 +155,15 @@ class ACLSTM(nn.Module):
     # (sequence length, batch size, features dim)
     # (batch size = n_envs for data collection or n_seq when doing gradient update)
     n_seq = lstm_states[0].shape[1]
+
     # Batch to sequence
     # (padded batch size, features_dim) -> (n_seq, max length, features_dim) -> (max length, n_seq, features_dim)
     # note: max length (max sequence length) is always 1 during data collection
 
-    features_sequence = features.reshape((n_seq, -1, self.lstm.input_size))
-    episode_starts = episode_starts.reshape((n_seq, -1))
+    features_sequence = features.reshape(
+        (n_seq, -1, self.lstm.input_size)
+    ).swapaxes(0, 1)
+    episode_starts = episode_starts.reshape((n_seq, -1)).swapaxes(0, 1)
 
     # If we don't have to reset the state in the middle of a sequence
     # we can avoid the for loop, which speeds up things
@@ -200,6 +206,7 @@ class MOALSTM(nn.Module):
       num_features,
       num_outputs,
       num_actions,
+      num_other_agents,
       cell_size,
       num_lstm_layers=1,
       lstm_kwargs={},
@@ -218,7 +225,7 @@ class MOALSTM(nn.Module):
     super().__init__()
 
     self.cell_size = cell_size
-    self.in_size = num_features + num_outputs + num_actions
+    self.in_size = num_features + (num_other_agents + 1) * num_actions
 
     self.lstm = nn.LSTM(
         self.in_size, cell_size, num_layers=num_lstm_layers, **lstm_kwargs

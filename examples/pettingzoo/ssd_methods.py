@@ -57,14 +57,10 @@ def kl_div(x,y):
   dist_y = th.distributions.categorical.Categorical(y)
   res = th.distributions.kl.kl_divergence(dist_x, dist_y)
 
-  #Don't return nans or infs
-  is_finite = is_finite(res)
+  # Don't return nans or infs
+  is_finite = th.all(th.isfinite(res))
 
-  def true_fn():
-    return res
+  if not is_finite:
+    res = th.zeros(th.Tensor.shape(res))
 
-  def false_fn():
-    return th.zeros(th.Tensor.shape(res))
-
-  res = th.cond(is_finite, true_fn, false_fn)
   return res

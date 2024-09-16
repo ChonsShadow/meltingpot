@@ -85,7 +85,7 @@ class CustomCNN(torch_layers.BaseFeaturesExtractor):
 
 def main():
   # Config
-  env_name = "commons_harvest__open"
+  env_name = "boat_race__eight_races"
   env_config = substrate.get_config(env_name)
   env = utils.parallel_env(env_config)
   rollout_len = 1000

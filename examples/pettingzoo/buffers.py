@@ -94,7 +94,7 @@ def create_sequencers(
   # End of sequence are just before sequence starts
   # Last index is also always end of a sequence
   seq_end_indices = np.concatenate(
-      [(seq_start_indices - 1)[1:], np.array([len(episode_starts)])]
+      [(seq_start_indices - 1)[1:], np.array([len(episode_starts.flatten())])]
   )
 
   # Create padding method for this minibatch
@@ -521,7 +521,11 @@ class MOABuffer(RolloutBuffer):
         self.moa_hidden_state_shape, dtype=np.float32
     )
     self.pred_actions = np.zeros(
-        (self.buffer_size, self.n_envs, self.action_dim * self.n_envs),
+        (
+            self.buffer_size,
+            self.n_envs,
+            self.action_space.n * (self.n_envs - 1),
+        ),
         dtype=np.float32,
     )
 
@@ -557,41 +561,50 @@ class MOABuffer(RolloutBuffer):
 
     # TODO: adapt to the same agent performing in different envs, especially in regards to the lstms
 
+  def add_inf_rew(self, inf_rews):
+    rews = self.rewards[self.pos - 1]
+    rews = np.add(rews, inf_rews)
+
+    # normalize rewards: NOTE: we assume that inf_rews are normalized, because
+    # used to calculate them are all normalized
+    rews = rews / 2
+    self.rewards[self.pos - 1]
+
   def get(
       self, agent: int, batch_size: Optional[int] = None
   ) -> Generator[RecurrentRolloutBufferSamples, None, None]:
     assert self.full, "Rollout buffer must be full before sampling from it"
 
     # Prepare the data
-    if not self.generator_ready:
-      # hidden_state_shape = (self.n_steps, lstm.num_layers, self.n_envs, lstm.hidden_size)
-      # swap first to (self.n_steps, self.n_envs, lstm.num_layers, lstm.hidden_size)
-      for tensor in [
-          "hidden_states_ac",
-          "cell_states_ac",
-          "hidden_states_moa",
-          "cell_states_moa",
-      ]:
-        self.__dict__[tensor] = self.__dict__[tensor].swapaxes(1, 2)
+    # if not self.generator_ready:
+    # hidden_state_shape = (self.n_steps, lstm.num_layers, self.n_envs, lstm.hidden_size)
+    # swap first to (self.n_steps, self.n_envs, lstm.num_layers, lstm.hidden_size)
+    # for tensor in [
+    #    "hidden_states_ac",
+    #   "cell_states_ac",
+    #  "hidden_states_moa",
+    # "cell_states_moa",
+    # ]:
+    # self.__dict__[tensor] = self.__dict__[tensor].swapaxes(1, 2)
 
-      # flatten but keep the sequence order
-      # 1. (n_steps, n_envs, *tensor_shape) -> (n_envs, n_steps, *tensor_shape)
-      # 2. (n_envs, n_steps, *tensor_shape) -> (n_envs * n_steps, *tensor_shape)
-      for tensor in [
-          "observations",
-          "actions",
-          "values",
-          "log_probs",
-          "advantages",
-          "returns",
-          "hidden_states_ac",
-          "cell_states_ac",
-          "hidden_states_moa",
-          "cell_states_moa",
-          "episode_starts",
-      ]:
-        self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
-      self.generator_ready = True
+    # flatten but keep the sequence order
+    # 1. (n_steps, n_envs, *tensor_shape) -> (n_envs, n_steps, *tensor_shape)
+    # 2. (n_envs, n_steps, *tensor_shape) -> (n_envs * n_steps, *tensor_shape)
+    #      for tensor in [
+    #          "observations",
+    #          "actions",
+    #          "values",
+    #          "log_probs",
+    #          "advantages",
+    #          "returns",
+    #          "hidden_states_ac",
+    #          "cell_states_ac",
+    #          "hidden_states_moa",
+    #          "cell_states_moa",
+    #          "episode_starts",
+    #      ]:
+    #        self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+    self.generator_ready = True
 
     # Return everything, don't create minibatches
     if batch_size is None:
@@ -613,7 +626,7 @@ class MOABuffer(RolloutBuffer):
     env_change = self.swap_and_flatten(env_change)
 
     start_idx = 0
-    while start_idx < self.buffer_size * self.n_envs:
+    while start_idx < self.buffer_size:
       batch_inds = indices[start_idx : start_idx + batch_size]
       yield self._get_samples(batch_inds, env_change, agent)
       start_idx += batch_size
@@ -628,64 +641,100 @@ class MOABuffer(RolloutBuffer):
   ) -> RecurrentRolloutBufferSamples:
     # Retrieve sequence starts and utility function
     self.seq_start_indices, self.pad, self.pad_and_flatten = create_sequencers(
-        self.episode_starts[batch_inds], env_change[batch_inds], self.device
+        self.episode_starts[[batch_inds], agent],
+        env_change.reshape((-1, self.n_envs))[[batch_inds], agent],
+        self.device,
     )
 
-    # TODO: fix padded batch size to fit the shape of the nd-arrays
     # Number of sequences
     n_seq = len(self.seq_start_indices)
     max_length = self.pad(self.actions[batch_inds]).shape[1]
     padded_batch_size = n_seq * max_length
+    if padded_batch_size < batch_inds.size:
+      padded_batch_size = batch_inds.size
     # We retrieve the lstm hidden states that will allow
     # to properly initialize the LSTM at the beginning of each sequence
+    hidden_ac = self.hidden_states_ac[[batch_inds], agent].swapaxes(0, 1)[
+        self.seq_start_indices
+    ]
+    cell_ac = self.cell_states_ac[[batch_inds], agent].swapaxes(0, 1)[
+        self.seq_start_indices
+    ]
+    hidden_moa = self.hidden_states_moa[[batch_inds], agent].swapaxes(0, 1)[
+        self.seq_start_indices
+    ]
+    cell_moa = self.cell_states_moa[[batch_inds], agent].swapaxes(0, 1)[
+        self.seq_start_indices
+    ]
     lstm_states_ac = (
         # 1. (n_envs * n_steps, n_layers, dim) -> (batch_size, n_layers, dim)
         # 2. (batch_size, n_layers, dim)  -> (n_seq, n_layers, dim)
         # 3. (n_seq, n_layers, dim) -> (n_layers, n_seq, dim)
-        self.hidden_states_ac[[batch_inds], agent][
-            self.seq_start_indices
-        ].swapaxes(0, 1),
-        self.cell_states_ac[[batch_inds], agent][
-            self.seq_start_indices
-        ].swapaxes(0, 1),
+        hidden_ac,
+        cell_ac,
     )
     lstm_states_moa = (
         # (n_envs * n_steps, n_layers, dim) -> (n_layers, n_seq, dim)
-        self.hidden_states_moa[[batch_inds], agent][
-            self.seq_start_indices
-        ].swapaxes(0, 1),
-        self.cell_states_moa[[batch_inds], agent][
-            self.seq_start_indices
-        ].swapaxes(0, 1),
+        hidden_moa,
+        cell_moa,
     )
+
     lstm_states_ac = (
-        self.to_torch(lstm_states_ac[0]).contiguous(),
-        self.to_torch(lstm_states_moa[1]).contiguous(),
+        lstm_states_ac[0].reshape(1, n_seq, self.ac_hidden_state_shape[-1]),
+        lstm_states_ac[1].reshape(1, n_seq, self.ac_hidden_state_shape[-1]),
     )
     lstm_states_moa = (
+        lstm_states_moa[0].reshape(1, n_seq, self.moa_hidden_state_shape[-1]),
+        lstm_states_moa[0].reshape(1, n_seq, self.moa_hidden_state_shape[-1]),
+    )
+
+    lstm_states_ac = (
         self.to_torch(lstm_states_ac[0]).contiguous(),
+        self.to_torch(lstm_states_ac[1]).contiguous(),
+    )
+    lstm_states_moa = (
+        self.to_torch(lstm_states_moa[0]).contiguous(),
         self.to_torch(lstm_states_moa[1]).contiguous(),
     )
 
+    action_batch = self.actions.reshape(
+        (self.actions.shape[0], self.actions.shape[1])
+    )
+    action_batch = self.actions[batch_inds]
+    others_acts = np.concatenate(
+        (action_batch[:, :agent], action_batch[:, (agent + 1) :]),
+        axis=1,
+    )
+
+    obs_batch = self.observations[batch_inds]
     return MoaRolloutBufferSamples(
         # (batch_size, obs_dim) -> (n_seq, max_length, obs_dim) -> (n_seq * max_length, obs_dim)
-        observations=self.pad(self.observations[[batch_inds], agent]).reshape(
+        observations=self.pad(obs_batch)[:, :, agent].reshape(
             (padded_batch_size, *self.obs_shape)
         ),
-        actions=self.pad(self.actions[[batch_inds], agent]).reshape(
-            (padded_batch_size,) + self.actions.shape[1:]
+        actions=self.pad(action_batch)[:, :, agent].reshape(
+            (padded_batch_size,) + self.actions.shape[2:]
         ),
-        old_values=self.pad_and_flatten(self.values[[batch_inds], agent]),
-        old_log_prob=self.pad_and_flatten(self.log_probs[[batch_inds], agent]),
-        advantages=self.pad_and_flatten(self.advantages[[batch_inds], agent]),
-        returns=self.pad_and_flatten(self.returns[[batch_inds], agent]),
-        pure_rews=self.pad_and_flatten(self.pure_rews[[batch_inds], agent]),
+        others_acts=self.pad(others_acts, 0).reshape(
+            (padded_batch_size, self.n_envs - 1) + self.actions.shape[2:]
+        ),
+        old_values=self.pad(self.values[batch_inds])[:, :, agent].flatten(),
+        old_log_prob=self.pad(self.log_probs[batch_inds])[
+            :, :, agent
+        ].flatten(),
+        advantages=self.pad(self.advantages[batch_inds])[:, :, agent].flatten(),
+        returns=self.pad(self.returns[batch_inds])[:, :, agent].flatten(),
+        pure_rews=self.pad(self.pure_rews[batch_inds])[:, :, agent].flatten(),
         lstm_states=RNNStates(lstm_states_ac, lstm_states_moa),
-        pred_actions=self.pad(self.pred_actions[[batch_inds], agent]),
-        episode_starts=self.pad_and_flatten(self.episode_starts),
-        mask=self.pad_and_flatten(
-            np.ones_like(self.returns[[batch_inds], agent])
-        ),
+        pred_actions=self.pad(self.pred_actions[batch_inds])[
+            :, :, agent
+        ].reshape((padded_batch_size, self.action_space.n, self.n_envs - 1)),
+        episode_starts=self.pad(self.episode_starts[batch_inds])[
+            :, :, agent
+        ].flatten(),
+        mask=self.pad(np.ones_like(self.returns[batch_inds]))[
+            :, :, agent
+        ].flatten(),
     )
 
   def compute_returns_and_advantage(
@@ -749,3 +798,6 @@ class MOABuffer(RolloutBuffer):
     # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
     # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
     self.returns[:, agent] = self.advantages[:, agent] + self.values[:, agent]
+
+# TODO: write 'add_influence_reward', which adds the influence reward for all agents
+#      to the rewards of the last step

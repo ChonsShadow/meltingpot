@@ -5,6 +5,7 @@ import numpy as np
 import torch as th
 from MOAPolicy import MOAPolicy
 from gymnasium import spaces
+from typing import Tuple
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
@@ -130,8 +131,9 @@ class MOAPPO(OnPolicyAlgorithm):
     self.num_agents = num_agents
     self.agent_lables = []
     self.moa_coef = moa_coef
-    self.prev_acts = None
-    self.prev_episode_starts = None
+    # noop for all, as nothing has happened yet
+    self.prev_acts = th.zeros(num_agents)
+    self.prev_episode_starts = np.zeros(num_agents)
 
     if _init_setup_model:
       self._setup_model()
@@ -287,8 +289,6 @@ class MOAPPO(OnPolicyAlgorithm):
               device=self.device,
           )
 
-          # TODO: we need to get the feature tensor from forward to save them as last_obs!
-          # TODO: detangle
           (
               new_actions,
               values,
@@ -302,15 +302,15 @@ class MOAPPO(OnPolicyAlgorithm):
               episode_starts,
               self.prev_acts,
               agent,
-              self.prev_episode_starts,
+              th.tensor(float(self.prev_episode_starts[agent])),
           )
 
           new_actions = new_actions.cpu().numpy()
           agent_actions.append(new_actions)
           agent_values.append(values)
           agent_log_probs.append(log_probs)
-          agents_pred_acts.append(pred_actions)
-          inf_rews[agent] = inf_rew
+          agents_pred_acts.append(th.squeeze(pred_actions))
+          inf_rews[agent] = th.sum(inf_rew)
           lstm_states[agent] = new_lstm_states
 
         clipped_actions.append(agent_actions[agent])
@@ -328,12 +328,12 @@ class MOAPPO(OnPolicyAlgorithm):
       agent_log_probs = th.stack(agent_log_probs, dim=0).flatten()
 
       new_obs, rewards, dones, infos = env.step(clipped_actions)
+      # TODO: inf_rew is calculated for past action -> we need to add it to the
+      # rew from that past action!
       pure_rews = rewards.copy()
-      rewards = np.add(rewards, inf_rews)
-      # normalize rewards: NOTE: we assume that inf_rews are normalized, because
-      # used to calculate them are all normalized, TODO: this needs to be tested
-      rewards = rewards / 2
-      self.num_timesteps += env.num_envs
+
+      if inf_rews.any():
+        self.rollout_buffer.add_inf_rew(inf_rews)
 
       # Give access to local variables
       callback.update_locals(locals())
@@ -440,6 +440,7 @@ class MOAPPO(OnPolicyAlgorithm):
     pg_losses, value_losses = [], []
     moa_losses = []
     clip_fractions = []
+    losses = []
 
     # NOTE: individual training is dependent on the individual kl_div
     #       training in general is dependent on the mean kl_div between all agents
@@ -473,7 +474,7 @@ class MOAPPO(OnPolicyAlgorithm):
           value, log_prob, entropy = self.agents_policies[
               agent
           ].evaluate_actions(
-              rollout_data.observation,
+              rollout_data.observations,
               actions,
               rollout_data.lstm_states,
               rollout_data.episode_starts,
@@ -485,7 +486,7 @@ class MOAPPO(OnPolicyAlgorithm):
           #       adaluzeantages
           advantages = rollout_data.advantages
           if self.normalize_advantage:
-            advantages = (advantages - advantages[mask].mean) / (
+            advantages = (advantages - advantages[mask].mean()) / (
                 advantages[mask].std() + 1e-8
             )
 
@@ -533,18 +534,20 @@ class MOAPPO(OnPolicyAlgorithm):
 
           entropy_losses.append(entropy_loss.item())
 
-          moa_loss = self.agents_policies[agent].calc_moa_loss(
-              rollout_data.pred_actions, rollout_data.actions
+          moa_loss, _ = self.agents_policies[agent].calc_moa_loss(
+              rollout_data.pred_actions, rollout_data.others_acts
           )
 
           moa_losses.append(moa_loss.item())
 
-          loss.append(
+          loss = (
               policy_loss
               + self.ent_coef * entropy_loss
               + self.vf_coef * value_loss
               + self.moa_coef * moa_loss
           )
+
+          losses.append(loss)
 
           with th.no_grad():
             log_ratio = log_prob - rollout_data.old_log_prob
@@ -562,6 +565,17 @@ class MOAPPO(OnPolicyAlgorithm):
           ):
             # stop training for current agent
             break
+
+          # Optimization:
+          self.agents_policies[agent].optimizer.zero_grad()
+          th.autograd.set_detect_anomaly(True)
+          loss.backward()
+          th.autograd.set_detect_anomaly(False)
+          # Clip grad norm
+          th.nn.utils.clip_grad_norm_(
+              self.agents_policies[agent].parameters(), self.max_grad_norm
+          )
+          self.agents_policies[agent].optimizer.step()
 
         # calculate mean kl_div to decide if training should be finished for now
         with th.no_grad():
@@ -583,16 +597,6 @@ class MOAPPO(OnPolicyAlgorithm):
             )
           break
 
-        # Optimization:
-        for agent in range(self.num_agents):
-          self.agents_policies[agent].optimizer.zero_grad()
-          loss[agent].backward()
-          # Clip grad norm
-          th.nn.utils.clip_grad_norm_(
-              self.policy[agent].parameters(), self.max_grad_norm
-          )
-          self.policy[agent].optimizer.step()
-
       if not continue_training:
         break
 
@@ -609,8 +613,6 @@ class MOAPPO(OnPolicyAlgorithm):
     self.logger.record("train/clip_fraction", np.mean(clip_fractions))
     self.logger.record("train/loss", loss.item())
     self.logger.record("train/explained_variance", explained_var)
-    if hasattr(self.policy, "log_std"):
-      self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
 
     self.logger.record(
         "train/n_updates", self._n_updates, exclude="tensorboard"
@@ -636,3 +638,26 @@ class MOAPPO(OnPolicyAlgorithm):
         reset_num_timesteps=reset_num_timesteps,
         progress_bar=progress_bar,
     )
+
+  def predict(
+      self,
+      observation: Union[np.ndarray, Dict[str, np.ndarray]],
+      state: Optional[Tuple[np.ndarray, ...]] = None,
+      episode_start: Optional[np.ndarray] = None,
+      deterministic: bool = False,
+  ):
+
+    actions = np.zeros((self.num_agents, *self.action_space.shape))
+    lstm_state = (
+        th.zeros(self._last_lstm_states.ac[0].shape),
+        th.zeros(self._last_lstm_states.ac[0].shape),
+    )
+    for agent in range(self.num_agents):
+      obs_tensor = th.as_tensor(
+          observation[agent], dtype=th.float32, device=self.device
+      )
+      actions[agent] = self.agents_policies[agent].predict(
+          obs_tensor, lstm_state, episode_start, deterministic
+      )
+
+    return actions
