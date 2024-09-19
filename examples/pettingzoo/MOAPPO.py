@@ -5,7 +5,7 @@ import numpy as np
 import torch as th
 from MOAPolicy import MOAPolicy
 from gymnasium import spaces
-from typing import Tuple
+from typing import Tuple, List
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
@@ -328,6 +328,9 @@ class MOAPPO(OnPolicyAlgorithm):
       agent_log_probs = th.stack(agent_log_probs, dim=0).flatten()
 
       new_obs, rewards, dones, infos = env.step(clipped_actions)
+
+      self.num_timesteps += 1
+
       # TODO: inf_rew is calculated for past action -> we need to add it to the
       # rew from that past action!
       pure_rews = rewards.copy()
@@ -649,9 +652,10 @@ class MOAPPO(OnPolicyAlgorithm):
 
     actions = np.zeros((self.num_agents, *self.action_space.shape))
     lstm_state = (
-        th.zeros(self._last_lstm_states.ac[0].shape),
-        th.zeros(self._last_lstm_states.ac[0].shape),
+        th.zeros(self._last_lstm_states[0].ac[0].shape),
+        th.zeros(self._last_lstm_states[0].ac[0].shape),
     )
+    episode_start = th.from_numpy(episode_start)
     for agent in range(self.num_agents):
       obs_tensor = th.as_tensor(
           observation[agent], dtype=th.float32, device=self.device
@@ -661,3 +665,38 @@ class MOAPPO(OnPolicyAlgorithm):
       )
 
     return actions
+
+  def _excluded_save_params(self) -> List[str]:
+    """
+    Returns the names of the parameters that should be excluded from being
+    saved by pickling. E.g. replay buffers are skipped by default
+    as they take up a lot of space. PyTorch variables should be excluded
+    with this so they can be stored with ``th.save``.
+
+    :return: List of parameters that should be excluded from being saved with pickle.
+    """
+    return [
+        "agents_policies",
+        "device",
+        "env",
+        "replay_buffer",
+        "rollout_buffer",
+        "_vec_normalize_env",
+        "_episode_storage",
+        "_logger",
+        "_custom_logger",
+    ]
+
+  def _get_torch_save_params(self) -> Tuple[th.List[str]]:
+
+    state_dicts = ["agents_policies"]
+    return state_dicts, []
+
+  """
+  def get_parameters(self) -> Dict[str, Dict]:
+    state_dicts_names, _ = self._get_torch_save_params()
+    params = {}
+    for name in state_dicts_names:
+      if name == "agents_policies":
+        for
+  """

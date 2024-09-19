@@ -13,7 +13,6 @@
 # limitations under the License.
 """Binary to run Stable Baselines 3 agents on meltingpot substrates."""
 
-
 import gymnasium as gym
 from meltingpot import substrate
 from stable_baselines3.common import callbacks

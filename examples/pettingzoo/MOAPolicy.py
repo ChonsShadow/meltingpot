@@ -76,7 +76,8 @@ class MOAPolicy(ActorCriticPolicy):
     self.cell_size = cell_size
     self.num_other_agents = num_other_agents
     self.num_actions = get_action_dim(action_space)
-    self.prev_action = []
+    self.act_last_step = th.zeros((1))
+    self.act_pre_last_step = th.zeros((1))
     self.div_measure = div_measure
     self.influence_reward = None
     self.prev_act_logits = None
@@ -262,7 +263,8 @@ class MOAPolicy(ActorCriticPolicy):
 
     if self.prev_obs_moa is not None:
 
-      self.prev_action = prev_acts[own_act_idx]
+      self.act_pre_last_step = self.act_last_step
+      self.act_last_step = prev_acts[own_act_idx]
       prev_acts = th.cat(
           [prev_acts[:own_act_idx], prev_acts[own_act_idx + 1 :]]
       )
@@ -308,11 +310,13 @@ class MOAPolicy(ActorCriticPolicy):
     """
     # prev actions sollte basierend auf den Kommentaren in ssd die Aktionen des letzten
     # steps enthalten
-    prev_agent_actions = th.reshape(self.prev_action, [-1, 1, 1]).type(th.int32)
+    agent_actions_pre_last = th.reshape(
+        self.act_pre_last_step, [-1, 1, 1]
+    ).type(th.int32)
     softmax = th.nn.Softmax()
 
     predicted_logits = gather_nd(
-        params=counterfactual_logits, indices=prev_agent_actions
+        params=counterfactual_logits, indices=agent_actions_pre_last
     )
 
     predicted_logits = th.reshape(
@@ -481,9 +485,9 @@ class MOAPolicy(ActorCriticPolicy):
     :param obs:
     :return: the action distribution.
     """
-    latent_ac = self.mlp_extractor.forward(obs)
+    latent_ac, _ = self.mlp_extractor.forward(obs)
     latent_pi, _, new_ac_lstm_states = self.ac_lstm.forward(
-        latent_ac, lstm_states.ac, episode_starts
+        latent_ac, lstm_states, episode_starts
     )
     return self._get_action_dist_from_latent(latent_pi)
 
