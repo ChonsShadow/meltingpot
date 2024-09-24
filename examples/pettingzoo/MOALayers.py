@@ -299,3 +299,106 @@ class MOALSTM(nn.Module):
         th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1
     )
     return lstm_output, lstm_states
+
+
+class AC_Net(nn.Module):
+
+  def __init__(
+      self,
+      in_size,
+      cell_size,
+      action_out_size=32,
+      num_lstm_layers=1,
+      lstm_kwargs={},
+  ):
+
+    super().__init__()
+
+    self.action_out_size = action_out_size
+
+    self.lstm = nn.LSTM(
+        in_size, cell_size, num_layers=num_lstm_layers, **lstm_kwargs
+    )
+    pre_out_size = int(self.lstm.hidden_size / 2)
+    self.pre_logit_layer = nn.Linear(self.lstm.hidden_size, pre_out_size)
+    self.logit_layer = nn.Linear(pre_out_size, action_out_size)
+    self.value_out = nn.Linear(self.lstm.hidden_size, 1)
+
+  def forward(self, features, lstm_states, episode_starts):
+
+    lstm_output, new_lstm_states = self._process_sequence(
+        features, lstm_states, episode_starts
+    )
+
+    pre_logits = self.pre_logit_layer(lstm_output)
+    logits = self.logit_layer(pre_logits)
+    value_out = self.value_out(lstm_output)
+
+    return logits, value_out, new_lstm_states
+
+  def _process_sequence(
+      self,
+      features: th.Tensor,
+      lstm_states: Tuple[th.Tensor, th.Tensor],
+      episode_starts: th.Tensor,
+  ) -> Tuple[th.Tensor, th.Tensor]:
+    """
+    Do a forward pass in the LSTM network.
+
+    :param features: Input tensor
+    :param lstm_states: previous hidden and cell states of the LSTM, respectively
+    :param episode_starts: Indicates when a new episode starts,
+        in that case, we need to reset LSTM states.
+    :param lstm: LSTM object.
+    :return: LSTM output and updated LSTM states.
+    """
+    # LSTM logic
+    # (sequence length, batch size, features dim)
+    # (batch size = n_envs for data collection or n_seq when doing gradient update)
+    n_seq = lstm_states[0].shape[1]
+
+    # Batch to sequence
+    # (padded batch size, features_dim) -> (n_seq, max length, features_dim) -> (max length, n_seq, features_dim)
+    # note: max length (max sequence length) is always 1 during data collection
+
+    episode_starts = episode_starts.reshape((n_seq, -1)).swapaxes(0, 1)
+    features_sequence = features.reshape(
+        (n_seq, -1, self.lstm.input_size)
+    ).swapaxes(0, 1)
+
+    # If we don't have to reset the state in the middle of a sequence
+    # we can avoid the for loop, which speeds up things
+    if th.all(episode_starts == 0.0):
+      lstm_output, lstm_states = self.lstm(features_sequence, lstm_states)
+      lstm_output = th.flatten(
+          lstm_output.transpose(0, 1), start_dim=0, end_dim=1
+      )
+      return lstm_output, lstm_states
+
+    features_sequence = features.reshape(
+        (n_seq, episode_starts.shape[0], -1, self.lstm.input_size)
+    ).swapaxes(0, 1)
+
+    lstm_output = []
+    # Iterate over the sequence
+    for features, episode_start in zip_strict(
+        features_sequence, episode_starts
+    ):
+      hidden, lstm_states = self.lstm(
+          features.swapaxes(0, 1),
+          (
+              # Reset the states at the beginning of a new episode
+              (1.0 - episode_start).view(1, n_seq, 1) * lstm_states[0],
+              (1.0 - episode_start).view(1, n_seq, 1) * lstm_states[1],
+          ),
+      )
+      lstm_output += [hidden]
+    # Sequence to batch
+    # (sequence length, n_seq, lstm_out_dim) -> (batch_size, lstm_out_dim)
+    lstm_output = th.flatten(
+        th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1
+    )
+    return lstm_output, lstm_states
+
+  def get_act_out_size(self):
+    return self.action_out_size

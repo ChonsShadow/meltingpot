@@ -5,20 +5,20 @@ from stable_baselines3.common.type_aliases import TensorDict
 
 
 class RNNStates(NamedTuple):
-    ac: Tuple[th.Tensor, ...]
-    moa: Tuple[th.Tensor, ...]
+  ac: Tuple[th.Tensor, ...]
+  moa: Tuple[th.Tensor, ...]
 
 
 class RecurrentRolloutBufferSamples(NamedTuple):
-    observations: th.Tensor
-    actions: th.Tensor
-    old_values: th.Tensor
-    old_log_prob: th.Tensor
-    advantages: th.Tensor
-    returns: th.Tensor
-    lstm_states: RNNStates
-    episode_starts: th.Tensor
-    mask: th.Tensor
+  observations: th.Tensor
+  actions: th.Tensor
+  old_values: th.Tensor
+  old_log_prob: th.Tensor
+  advantages: th.Tensor
+  returns: th.Tensor
+  lstm_states: RNNStates
+  episode_starts: th.Tensor
+  mask: th.Tensor
 
 
 class RecurrentDictRolloutBufferSamples(NamedTuple):
@@ -44,5 +44,18 @@ class MoaRolloutBufferSamples(NamedTuple):
   pure_rews: th.Tensor
   lstm_states: RNNStates
   pred_actions: th.Tensor
+  episode_starts: th.Tensor
+  mask: th.Tensor
+
+
+class SocInfRolloutBufferSamples(NamedTuple):
+  observations: th.Tensor
+  actions: th.Tensor
+  prev_actions: th.Tensor
+  old_values: th.Tensor
+  old_log_prob: th.Tensor
+  advantages: th.Tensor
+  returns: th.Tensor
+  lstm_states: Tuple
   episode_starts: th.Tensor
   mask: th.Tensor
