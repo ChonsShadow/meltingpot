@@ -651,20 +651,25 @@ class MOAPPO(OnPolicyAlgorithm):
   ):
 
     actions = np.zeros((self.num_agents, *self.action_space.shape))
-    lstm_state = (
-        th.zeros(self._last_lstm_states[0].ac[0].shape),
-        th.zeros(self._last_lstm_states[0].ac[0].shape),
-    )
-    episode_start = th.from_numpy(episode_start)
+    new_states = False
+    if state == None:
+      new_states = True
+      state = []
+    episode_start = th.from_numpy(episode_start).type(th.float32)
     for agent in range(self.num_agents):
+      if new_states:
+        state.append(
+          (th.zeros(self._last_lstm_states[0].ac[0].shape),
+          th.zeros(self._last_lstm_states[0].ac[0].shape),)
+        )
       obs_tensor = th.as_tensor(
           observation[agent], dtype=th.float32, device=self.device
       )
-      actions[agent] = self.agents_policies[agent].predict(
-          obs_tensor, lstm_state, episode_start, deterministic
+      actions[agent], state[agent] = self.agents_policies[agent].predict(
+          obs_tensor, state[agent], episode_start[agent], deterministic
       )
 
-    return actions
+    return actions.astype(int), state
 
   def _excluded_save_params(self) -> List[str]:
     """
@@ -677,6 +682,7 @@ class MOAPPO(OnPolicyAlgorithm):
     """
     return [
         "agents_policies",
+        "_last_lstm_states",
         "device",
         "env",
         "replay_buffer",
@@ -688,15 +694,9 @@ class MOAPPO(OnPolicyAlgorithm):
     ]
 
   def _get_torch_save_params(self) -> Tuple[th.List[str]]:
-
-    state_dicts = ["agents_policies"]
+    state_dicts = []
+    for agent in range(self.num_agents):
+      setattr(self, f"policy_{agent}", self.agents_policies[agent])
+      state_dicts.append(f"policy_{agent}")
+      state_dicts.append(f"policy_{agent}.optimizer")
     return state_dicts, []
-
-  """
-  def get_parameters(self) -> Dict[str, Dict]:
-    state_dicts_names, _ = self._get_torch_save_params()
-    params = {}
-    for name in state_dicts_names:
-      if name == "agents_policies":
-        for
-  """

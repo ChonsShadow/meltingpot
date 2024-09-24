@@ -568,7 +568,7 @@ class MOABuffer(RolloutBuffer):
     # normalize rewards: NOTE: we assume that inf_rews are normalized, because
     # used to calculate them are all normalized
     rews = rews / 2
-    self.rewards[self.pos - 1]
+    self.rewards[self.pos - 1] = rews
 
   def get(
       self, agent: int, batch_size: Optional[int] = None
