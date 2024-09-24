@@ -460,8 +460,6 @@ class MOAPPO(OnPolicyAlgorithm):
 
       for agent in range(self.num_agents):
         for rollout_data in self.rollout_buffer.get(agent, self.batch_size):
-          # no need to adapt here: in any case we should get aan agent-keyed
-          # dict with all actions
           actions = rollout_data.actions
           if isinstance(self.action_space, spaces.Discrete):
             # convert discrete actions from float to long
@@ -486,7 +484,7 @@ class MOAPPO(OnPolicyAlgorithm):
           value = value.flatten()
 
           # NOTE: maybe we need to inspect the shape of advantages, as it only refers to one agents
-          #       adaluzeantages
+          #       advantages
           advantages = rollout_data.advantages
           if self.normalize_advantage:
             advantages = (advantages - advantages[mask].mean()) / (
