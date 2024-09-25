@@ -96,7 +96,7 @@ class Soc_Inf_ppo(PPO):
       rollout_buffer_class: Optional[Type[RolloutBuffer]] = None,
       rollout_buffer_kwargs: Optional[Dict[str, Any]] = None,
       target_kl: Optional[float] = None,
-      stats_window_size: int = 100,
+      stats_window_size: int = 1000,
       tensorboard_log: Optional[str] = None,
       policy_kwargs: Optional[Dict[str, Any]] = None,
       verbose: int = 0,
@@ -118,7 +118,7 @@ class Soc_Inf_ppo(PPO):
         sde_sample_freq=sde_sample_freq,
         rollout_buffer_class=rollout_buffer_class,
         rollout_buffer_kwargs=rollout_buffer_kwargs,
-        stats_window_size=stats_window_size,
+        stats_window_size=stats_window_size * num_agents,
         tensorboard_log=tensorboard_log,
         policy_kwargs=policy_kwargs,
         verbose=verbose,
@@ -526,7 +526,7 @@ class Soc_Inf_ppo(PPO):
       episode_start: Optional[np.ndarray] = None,
       deterministic: bool = False,
   ):
-    if self.pred_actions == None:
+    if self.pred_actions is None:
       self.pred_actions = th.zeros(self.num_agents)
     if state == None:
       state = (
@@ -535,7 +535,8 @@ class Soc_Inf_ppo(PPO):
       )
     if isinstance(episode_start, np.ndarray):
       episode_start = th.from_numpy(episode_start).type(th.float32)
-
-    return self.policy.predict(
+    self.pred_actions, state = self.policy.predict(
         observation, self.pred_actions, state, episode_start, deterministic
     )
+
+    return self.pred_actions, state

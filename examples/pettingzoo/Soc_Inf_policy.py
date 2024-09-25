@@ -480,7 +480,7 @@ class Soc_Inf_Policy(ActorCriticPolicy):
     obs_tensor, vectorized_env = self.obs_to_tensor(observation)
 
     with th.no_grad():
-      actions = self._predict(
+      actions, state = self._predict(
           obs_tensor,
           prev_actions,
           state,
@@ -521,9 +521,10 @@ class Soc_Inf_Policy(ActorCriticPolicy):
     :param deterministic: Whether to use stochastic or deterministic actions
     :return: Taken action according to the policy
     """
-    return self.get_distribution(
+    dist, state = self.get_distribution(
         observation, prev_actions, state, episode_start
-    ).get_actions(deterministic=deterministic)
+    )
+    return dist.get_actions(deterministic=deterministic), state
 
   def get_distribution(
       self, obs, prev_acts, lstm_states, episode_starts
@@ -537,7 +538,7 @@ class Soc_Inf_Policy(ActorCriticPolicy):
 
     features = self.extract_features(observations)
     features = features.reshape(self.num_agents, -1)
-    latent_pi, _, _ = self.ac_network.forward(
+    latent_pi, _, state = self.ac_network.forward(
         features, lstm_states, episode_starts
     )
-    return self._get_action_dist_from_latent(latent_pi)
+    return self._get_action_dist_from_latent(latent_pi), state
