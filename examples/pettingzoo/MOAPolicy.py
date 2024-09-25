@@ -489,7 +489,7 @@ class MOAPolicy(ActorCriticPolicy):
     latent_pi, _, new_ac_lstm_states = self.ac_lstm.forward(
         latent_ac, lstm_states, episode_starts
     )
-    return self._get_action_dist_from_latent(latent_pi)
+    return self._get_action_dist_from_latent(latent_pi), new_ac_lstm_states
 
   def predict(
       self,
@@ -520,7 +520,7 @@ class MOAPolicy(ActorCriticPolicy):
       )
 
     with th.no_grad():
-      actions = self._predict(observation, state, episode_start, deterministic)
+      actions, new_state = self._predict(observation, state, episode_start, deterministic)
     actions = actions.cpu().numpy().reshape(self.action_space._shape)
 
     if isinstance(self.action_space, spaces.Box):
@@ -535,7 +535,7 @@ class MOAPolicy(ActorCriticPolicy):
     # TODO: for the usage of multiple envs, the possibility of vectorized envs
     #      must be handled here
 
-    return actions
+    return actions, new_state
 
   def _predict(
       self, observation, state, episode_start, deterministic
@@ -547,6 +547,5 @@ class MOAPolicy(ActorCriticPolicy):
     :param deterministic: Whether to use stochastic or deterministic actions
     :return: Taken action according to the policy
     """
-    return self.get_distribution(observation, state, episode_start).get_actions(
-        deterministic=deterministic
-    )
+    act_dist, new_state = self.get_distribution(observation, state, episode_start)
+    return act_dist.get_actions(deterministic=deterministic), new_state
