@@ -976,3 +976,33 @@ class Soc_Inf_Buffer(RolloutBuffer):
     # used to calculate them are all normalized
     rews = rews / 2
     self.rewards[self.pos - 1] = rews
+
+
+class Eval_Buffer:
+
+  def __init__(self, num_agents, num_steps, num_actions):
+    self.step = 0
+    shape = (num_steps, num_agents)
+    self.actions = np.zeros((num_steps, num_agents) + (num_actions,))
+    self.rewards = np.zeros(shape)
+    self.inf_rews = np.zeros(shape)
+
+  def add(self, actions, rewards, inf_rews):
+    for agent, action in enumerate(actions):
+      self.actions[self.step][agent][action] += 1
+
+    if self.step == 0:
+      self.rewards[self.step] = rewards
+      self.inf_rews[self.step] = inf_rews
+    else:
+      self.rewards[self.step] = np.add(rewards, self.rewards[self.step - 1])
+      self.inf_rews[self.step] = np.add(inf_rews, self.inf_rews[self.step - 1])
+    self.step += 1
+
+  def get_eval_vals(self):
+    return (
+        np.sum(self.actions, axis=0),
+        np.sum(self.actions, axis=0),
+        self.rewards,
+        self.inf_rews,
+    )

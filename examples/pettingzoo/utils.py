@@ -28,7 +28,7 @@ PLAYER_STR_FORMAT = 'player_{index}'
 MAX_CYCLES = 1000
 
 
-def parallel_env(env_config, max_cycles=MAX_CYCLES):
+def parallel_env(env_config, max_cycles=MAX_CYCLES, render_mode='rgb_array'):
   return _ParallelEnv(env_config, max_cycles)
 
 
@@ -114,7 +114,7 @@ class _MeltingPotPettingZooEnv(pettingzoo_utils.ParallelEnv):
 class _ParallelEnv(_MeltingPotPettingZooEnv, gym_utils.EzPickle):
   metadata = {'render_modes': ['human', 'rgb_array', 'ascii_shape']}
 
-  def __init__(self, env_config, max_cycles):
+  def __init__(self, env_config, max_cycles, render_mode='rgb_array'):
     gym_utils.EzPickle.__init__(self, env_config, max_cycles)
     _MeltingPotPettingZooEnv.__init__(self, env_config, max_cycles)
-    self.render_mode = 'rgb_array'
+    self.render_mode = render_mode
