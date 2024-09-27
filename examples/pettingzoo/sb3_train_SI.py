@@ -90,7 +90,7 @@ class CustomCNN(torch_layers.BaseFeaturesExtractor):
 
 def main():
   # Config
-  env_name = "boat_race__eight_races"
+  env_name = "commons_harvest__closed"
   env_config = substrate.get_config(env_name)
   env = utils.parallel_env(env_config)
   rollout_len = 1000
@@ -98,7 +98,7 @@ def main():
   num_agents = env.max_num_agents
 
   # Training
-  num_cpus = 1  # number of cpus
+  num_cpus = 3  # number of cpus
   num_envs = 1  # number of parallel multi-agent environments
   # number of frames to stack together; use >4 to avoid automatic
   # VecTransposeImage
