@@ -88,9 +88,65 @@ class CustomCNN(torch_layers.BaseFeaturesExtractor):
     return features
 
 
+# Use this with lambda wrapper returning observations only
+class ColabCookingCNN(torch_layers.BaseFeaturesExtractor):
+  """Class describing a custom feature extractor."""
+
+  def __init__(
+      self,
+      observation_space: gym.spaces.Box,
+      features_dim=128,
+      num_frames=6,
+      fcnet_hiddens=(512, 128),
+  ):
+    """Construct a CNN feature extractor specifically for collaborative cooking substrates.
+
+    Args:
+      observation_space: the observation space as a gym.Space
+      features_dim: Number of features extracted. This corresponds to the number
+        of unit for the last layer.
+      num_frames: The number of (consecutive) frames to feed into the network.
+      fcnet_hiddens: Sizes of hidden layers.
+    """
+    super().__init__(observation_space, features_dim)
+    # We assume CxHxW images (channels first)
+    # Re-ordering will be done by pre-preprocessing or wrapper
+    fcnet_hiddens[0] = 512
+
+    self.conv = nn.Sequential(
+        nn.Conv2d(
+            num_frames * 3, num_frames * 5, kernel_size=5, stride=4, padding=0
+        ),
+        nn.ReLU(),  # 18 * 21 * 21
+        nn.Conv2d(
+            num_frames * 5, num_frames * 9, kernel_size=3, stride=2, padding=0
+        ),
+        nn.ReLU(),  # 36 * 9 * 9
+        # nn.Conv2d(
+        #   num_frames * 9, num_frames * 9, kernel_size=2, stride=1, padding=0
+        # ),
+        # nn.ReLU(),  # 36 * 7 * 7
+        nn.Flatten(),
+    )
+    flat_out = num_frames * 6 * 8 * 3
+    self.fc1 = nn.Linear(in_features=flat_out, out_features=fcnet_hiddens[0])
+    self.fc2 = nn.Linear(
+        in_features=fcnet_hiddens[0], out_features=fcnet_hiddens[1]
+    )
+
+  def forward(self, observations) -> torch.Tensor:
+    # Convert to tensor, rescale to [0, 1], and convert from
+    #   B x H x W x C to B x C x H x W
+    observations = observations.permute(0, 3, 1, 2)
+    features = self.conv(observations)
+    features = F.relu(self.fc1(features))
+    features = F.relu(self.fc2(features))
+    return features
+
+
 def main():
   # Config
-  env_name = "boat_race__eight_races"
+  env_name = "collaborative_cooking__figure_eight"
   env_config = substrate.get_config(env_name)
   env = utils.parallel_env(env_config)
   rollout_len = 1000
@@ -129,14 +185,14 @@ def main():
   # actions, observations, rewards and other env-agent-specific vars become
   # vectors
   env = ss.pettingzoo_env_to_vec_env_v1(env)
-  env = ss.concat_vec_envs_v1(  # does not alter step()
+  env = ss.concat_vec_envs_v1(
       env,
       num_vec_envs=num_envs,
       num_cpus=num_cpus,
       base_class="stable_baselines3",
   )
-  env = vec_env.VecMonitor(env)  # does not alter step()
-  env = vec_env.VecTransposeImage(env, True)  # does not alter step()
+  env = vec_env.VecMonitor(env)
+  env = vec_env.VecTransposeImage(env, True)
 
   eval_env = utils.parallel_env(
       max_cycles=rollout_len,
@@ -156,13 +212,14 @@ def main():
 
   policy_kwargs = dict(
       num_frames=num_frames,
-      features_extractor_class=CustomCNN,
+      features_extractor_class=ColabCookingCNN,
       features_extractor_kwargs=dict(
           features_dim=features_dim,
           num_frames=num_frames,
           fcnet_hiddens=fcnet_hiddens,
       ),
       num_agents=num_agents,
+      mixed=True,
   )
 
   tensorboard_log = "./results/sb3/harvest_open_ppo_paramsharing"

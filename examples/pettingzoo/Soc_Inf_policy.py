@@ -81,6 +81,7 @@ class Soc_Inf_Policy(ActorCriticPolicy):
       div_measure="kl",
       fc_activation_fn: Type[nn.Module] = nn.Tanh,
       num_agents: int = 0,
+      mixed: bool = False,
       # standardvalues taken from ssd-games
       num_frames=4,
       cell_size=128,
@@ -95,6 +96,10 @@ class Soc_Inf_Policy(ActorCriticPolicy):
     self.cell_size = cell_size
     self.prev_features = None
     share_features_extractor = True
+    self.use_inf_rew = np.zeros((num_agents))
+    if mixed:
+      for agent in range(int(num_agents / 2)):
+        self.use_inf_rew[agent] = True
 
     super().__init__(
         observation_space,
@@ -270,17 +275,74 @@ class Soc_Inf_Policy(ActorCriticPolicy):
     inf_rew = np.zeros((self.num_agents))
     if self.inf_threshold_reached:
       for agent in range(self.num_agents):
-        other_agent_acts = th.cat([prev_acts[:agent], prev_acts[agent + 1 :]])
+        if self.use_inf_rew[agent]:
+          other_agent_acts = th.cat([prev_acts[:agent], prev_acts[agent + 1 :]])
 
-        counterfacts = self.get_counterfacts(
-            obs, agent, other_agent_acts, lstm_states, episode_starts
-        )
-        others_latent_pi = th.cat([latent_pi[:agent], latent_pi[agent + 1 :]])
+          counterfacts = self.get_counterfacts(
+              obs, agent, other_agent_acts, lstm_states, episode_starts
+          )
+          others_latent_pi = th.cat([latent_pi[:agent], latent_pi[agent + 1 :]])
 
-        inf_rew[agent] = self.calc_influence_reward(
-            prev_acts[agent], others_latent_pi, counterfacts
-        )
+          inf_rew[agent] = self.calc_influence_reward(
+              prev_acts[agent], others_latent_pi, counterfacts
+          )
     return actions, values, log_prob, new_ac_lstm_states, inf_rew
+
+  def eval_forward(
+      self,
+      obs: th.Tensor,
+      lstm_states: Tuple,
+      episode_starts: th.Tensor,
+      prev_acts: th.Tensor,
+      deterministic=False,
+  ):
+    """
+    shortened forward for evaluation
+
+    Args:
+        obs (th.Tensor): the current observations made by agents in the environment
+        lstm_states (RNNStates): the current lstm_states for the ac_lstm
+        episode_starts (th.Tensor): current episode starts needed for the lstm
+        prev_acts (th.Tensor): the acts from the last step, needed to feed
+                            into the ac_network, as those acts should
+                            influence the agents in their behavior so the
+                            influence reward can have some effect.
+        deterministic (bool, optional): Indicator if actions should
+                                        be generated deterministically or not.
+                                        Defaults to False.
+    """
+    self.set_training_mode(False)
+
+    if isinstance(prev_acts, np.ndarray):
+      prev_acts = th.from_numpy(prev_acts).flatten()
+    repeated_acts = prev_acts.repeat(self.observation_space.shape).reshape(
+        (-1,) + self.observation_space.shape
+    )
+    observations = th.cat((obs, repeated_acts))
+
+    features = self.extract_features(observations)
+    features = features.reshape(self.num_agents, -1)
+
+    latent_pi, _, new_ac_lstm_states = self.ac_network.forward(
+        features, lstm_states, episode_starts
+    )
+    distribution = self._get_action_dist_from_latent(latent_pi)
+    actions = distribution.get_actions(deterministic=deterministic)
+    actions = actions.reshape((-1, *self.action_space.shape))
+
+    inf_rew = np.zeros((self.num_agents))
+    for agent in range(self.num_agents):
+      other_agent_acts = th.cat([prev_acts[:agent], prev_acts[agent + 1 :]])
+
+      counterfacts = self.get_counterfacts(
+          obs, agent, other_agent_acts, lstm_states, episode_starts
+      )
+      others_latent_pi = th.cat([latent_pi[:agent], latent_pi[agent + 1 :]])
+
+      inf_rew[agent] = self.calc_influence_reward(
+          prev_acts[agent], others_latent_pi, counterfacts
+      )
+    return actions, new_ac_lstm_states, inf_rew
 
   def calc_influence_reward(
       self, agents_act_tensor, action_logits, counterfactual_logits
