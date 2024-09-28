@@ -37,3 +37,4 @@ results/sb3/harvest_open_ppo_paramsharing
 actions_boat_no_inf.png
 inf_rews_boat_no_inf.png
 rewards_boat_no_inf.png
+metrics_*

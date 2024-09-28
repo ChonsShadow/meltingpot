@@ -1002,7 +1002,7 @@ class Eval_Buffer:
   def get_eval_vals(self):
     return (
         np.sum(self.actions, axis=0),
-        np.sum(self.actions, axis=0),
+        np.sum(self.actions, axis=(0, 1)),
         self.rewards,
         self.inf_rews,
     )

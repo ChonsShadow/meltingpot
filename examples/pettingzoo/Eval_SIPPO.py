@@ -80,6 +80,7 @@ def main():
   for agent in range(num_agents):
     axs[agent].bar(x, actions[agent], label=f"agent_{agent}")
   fig.savefig("actions" + data_suffix)
+  plt.close(fig)
 
   plt.bar(x, whole_actions)
   plt.savefig("summed_acts" + data_suffix)
