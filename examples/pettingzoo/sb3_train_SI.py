@@ -146,7 +146,7 @@ class ColabCookingCNN(torch_layers.BaseFeaturesExtractor):
 
 def main():
   # Config
-  env_name = "collaborative_cooking__figure_eight"
+  env_name = "commons_harvest__closed"
   env_config = substrate.get_config(env_name)
   env = utils.parallel_env(env_config)
   rollout_len = 1000
@@ -172,7 +172,7 @@ def main():
   target_kl = 0.01
   grad_clip = 40
   verbose = 3
-  model_path = None  # Replace this with a saved model
+  model_path = None # Replace this with a saved model
 
   env = utils.parallel_env(
       max_cycles=rollout_len,
@@ -212,7 +212,7 @@ def main():
 
   policy_kwargs = dict(
       num_frames=num_frames,
-      features_extractor_class=ColabCookingCNN,
+      features_extractor_class=CustomCNN,
       features_extractor_kwargs=dict(
           features_dim=features_dim,
           num_frames=num_frames,
@@ -222,7 +222,7 @@ def main():
       mixed=True,
   )
 
-  tensorboard_log = "./results/sb3/harvest_open_ppo_paramsharing"
+  tensorboard_log = "./results/sb3/harvest_closed_SIPPO"
 
   model = Soc_Inf_ppo(
       Soc_Inf_Policy,

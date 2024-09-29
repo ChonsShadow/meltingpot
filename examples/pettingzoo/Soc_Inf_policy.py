@@ -96,10 +96,10 @@ class Soc_Inf_Policy(ActorCriticPolicy):
     self.cell_size = cell_size
     self.prev_features = None
     share_features_extractor = True
-    self.use_inf_rew = np.zeros((num_agents))
+    self.use_inf_rew = np.ones((num_agents))
     if mixed:
       for agent in range(int(num_agents / 2)):
-        self.use_inf_rew[agent] = True
+        self.use_inf_rew[-agent] = False
 
     super().__init__(
         observation_space,
@@ -387,7 +387,7 @@ class Soc_Inf_Policy(ActorCriticPolicy):
       print("influence measure is not implemented, using kl as default...")
       influence_reward = kl_div(predicted_logits, marginal_logits)
 
-    influence_reward = th.sum(influence_reward)
+    influence_reward = th.sum(abs(influence_reward)) * pow(10, 2)
     return influence_reward
 
   def marginalize_predictions(self, prev_action_logits, counterfactual_logits):

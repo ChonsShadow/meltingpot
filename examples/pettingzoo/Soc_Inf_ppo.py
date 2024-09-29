@@ -93,7 +93,7 @@ class Soc_Inf_ppo(PPO):
       env: Union[GymEnv, str],
       num_agents: int,
       learning_rate: Union[float, Schedule] = 3e-4,
-      inf_threshold: float = 7500,
+      inf_threshold: float = 0,
       n_steps: int = 2048,
       batch_size: int = 64,
       n_epochs: int = 10,
@@ -140,7 +140,7 @@ class Soc_Inf_ppo(PPO):
         seed=seed,
         _init_setup_model=False,
     )
-    self.batch_size = int(self.n_envs * n_steps / 100)
+    self.batch_size = int(num_agents * n_steps / 100)
     self.n_epochs = n_epochs
     self.clip_range = clip_range
     self.clip_range_vf = clip_range_vf
@@ -286,7 +286,7 @@ class Soc_Inf_ppo(PPO):
       new_obs, rewards, dones, infos = env.step(clipped_actions)
       self.num_timesteps += env.num_envs
 
-      if not self.policy.inf_threshold_reached:
+      if not self.inf_threshold == math.inf and not self.policy.inf_threshold_reached:
         num_rews = 0
         for rew in rewards:
           if rew > 0:
@@ -523,7 +523,7 @@ class Soc_Inf_ppo(PPO):
       total_timesteps: int,
       callback: MaybeCallback = None,
       log_interval: int = 1,
-      tb_log_name: str = "SocInfPPO",
+      tb_log_name: str = "SocInfPPO_mixed_Inf",
       reset_num_timesteps: bool = True,
       progress_bar: bool = False,
   ):
@@ -660,6 +660,9 @@ class Soc_Inf_ppo(PPO):
       # Use stored env, if one exists. If not, continue as is (can be used for predict)
       if "env" in data:
         env = data["env"]
+
+    #if "inf_threshold" in data:
+    #  data["inf_threshold"] = 0
 
     model = cls(
         policy=data["policy_class"],
