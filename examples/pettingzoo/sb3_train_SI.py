@@ -146,7 +146,7 @@ class ColabCookingCNN(torch_layers.BaseFeaturesExtractor):
 
 def main():
   # Config
-  env_name = "collaborative_cooking__figure_eight"
+  env_name = "collaborative_cooking__crowded"
   env_config = substrate.get_config(env_name)
   env = utils.parallel_env(env_config)
   rollout_len = 1000
@@ -222,7 +222,7 @@ def main():
       mixed=True,
   )
 
-  tensorboard_log = "./results/sb3/harvest_open_ppo_paramsharing"
+  tensorboard_log = "./results/sb3/cc_Crowded"
 
   model = Soc_Inf_ppo(
       Soc_Inf_Policy,
