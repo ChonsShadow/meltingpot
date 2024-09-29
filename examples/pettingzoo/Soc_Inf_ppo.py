@@ -286,7 +286,10 @@ class Soc_Inf_ppo(PPO):
       new_obs, rewards, dones, infos = env.step(clipped_actions)
       self.num_timesteps += env.num_envs
 
-      if not self.inf_threshold == math.inf and not self.policy.inf_threshold_reached:
+      if (
+          not self.inf_threshold == math.inf
+          and not self.policy.inf_threshold_reached
+      ):
         num_rews = 0
         for rew in rewards:
           if rew > 0:

@@ -11,7 +11,7 @@ import supersuit as ss
 
 
 def main():
-  model_path = "./results/sb3/harvest_open_ppo_paramsharing/SocInfPPO_58/model"
+  model_path = "./results/sb3/boat_race_SIPPO/SocInfPPO_mixed_inf/model"
 
   # Config
   env_name = "boat_race__eight_races"
@@ -21,7 +21,7 @@ def main():
   total_timesteps = 10000
   num_agents = env.max_num_agents
   render_mode = "human"
-  data_suffix = "_boat_no_inf.png"
+  data_suffix = "_boat_mixed_inf.png"
 
   # Training
   num_cpus = 1  # number of cpus
@@ -80,6 +80,7 @@ def main():
   for agent in range(num_agents):
     axs[agent].bar(x, actions[agent], label=f"agent_{agent}")
   fig.savefig("actions" + data_suffix)
+  plt.close(fig)
 
   plt.bar(x, whole_actions)
   plt.savefig("summed_acts" + data_suffix)
