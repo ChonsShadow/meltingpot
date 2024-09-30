@@ -526,7 +526,7 @@ class Soc_Inf_ppo(PPO):
       total_timesteps: int,
       callback: MaybeCallback = None,
       log_interval: int = 1,
-      tb_log_name: str = "SocInfPPO_full_inf",
+      tb_log_name: str = "SocInfPPO_mixed_Inf",
       reset_num_timesteps: bool = True,
       progress_bar: bool = False,
   ):
@@ -663,6 +663,9 @@ class Soc_Inf_ppo(PPO):
       # Use stored env, if one exists. If not, continue as is (can be used for predict)
       if "env" in data:
         env = data["env"]
+
+    #if "inf_threshold" in data:
+    #  data["inf_threshold"] = 0
 
     model = cls(
         policy=data["policy_class"],
