@@ -1,12 +1,7 @@
-# Melting Pot
+# Implementierung und Untersuchung der Effekte von Social Influence auf kooperative Mulit-Agenten Systeme
 
-*A suite of test scenarios for multi-agent reinforcement learning.*
+*Die Strukutr dieses Repositories basiert auf dem google-deepmind meltingpot Repository (https://github.com/google-deepmind/meltingpot)*
 
-[![Python](https://img.shields.io/pypi/pyversions/dm-meltingpot.svg)](https://pypi.python.org/pypi/dm-meltingpot)
-[![PyPI version](https://img.shields.io/pypi/v/dm-meltingpot.svg)](https://pypi.python.org/pypi/dm-meltingpot)
-[![PyPI tests](../../actions/workflows/pypi-test.yml/badge.svg)](../../actions/workflows/pypi-test.yml)
-[![Tests](../../actions/workflows/test-meltingpot.yml/badge.svg)](../../actions/workflows/test-meltingpot.yml)
-[![Examples](../../actions/workflows/test-examples.yml/badge.svg)](../../actions/workflows/test-examples.yml)
 
 <div align="center">
   <img src="docs/images/meltingpot_montage.gif"
@@ -14,41 +9,12 @@
        height="250" width="250" />
 </div>
 
-NEWS! [Melting Pot Contest at NeurIPS 2023](https://www.aicrowd.com/challenges/meltingpot-challenge-2023)
-
-[Melting Pot 2.0 Tech Report](https://arxiv.org/abs/2211.13746)
-
-## About
-
-Melting Pot assesses generalization to novel social situations involving both
-familiar and unfamiliar individuals, and has been designed to test a broad range
-of social interactions such as: cooperation, competition, deception,
-reciprocation, trust, stubbornness and so on. Melting Pot offers researchers a
-set of over 50 multi-agent reinforcement learning _substrates_ (multi-agent
-games) on which to train agents, and over 256 unique test _scenarios_ on which
-to evaluate these trained agents. The performance of agents on these held-out
-test scenarios quantifies whether agents:
-
-*   perform well across a range of social situations where individuals are
-    interdependent,
-*   interact effectively with unfamiliar individuals not seen during training
-
-The resulting score can then be used to rank different multi-agent RL algorithms
-by their ability to generalize to novel social situations.
-
-We hope Melting Pot will become a standard benchmark for multi-agent
-reinforcement learning. We plan to maintain it, and will be extending it in the
-coming years to cover more social interactions and generalization scenarios.
-
-If you are interested in extending Melting Pot, please refer to the
-[Extending Melting Pot](docs/extending.md) documentation.
-
 ## Installation
 
 ### `pip` install
 
 [Melting Pot is available on PyPI](https://pypi.python.org/pypi/dm-meltingpot)
-and can be installed using:
+and can be installed using the following command:
 
 ```shell
 pip install dm-meltingpot
@@ -62,7 +28,7 @@ for details).
 
 ### Manual install
 
-If you want to work on the Melting Pot source code, you can perform an editable
+If you want to work on the Melting Pot source code or inspect it more closely, you can perform an editable
 installation as follows:
 
 1.  Clone Melting Pot:
@@ -91,18 +57,6 @@ installation as follows:
     pytest --pyargs meltingpot
     ```
 
-### Devcontainer (x86 only)
-
-*NOTE: This Devcontainer only works for x86 platforms. For arm64 (newer M1 Macs)
-users will have to follow the manual installation steps.*
-
-This project includes a pre-configured development environment
-([devcontainer](https://containers.dev)).
-
-You can launch a working development environment with one click, using e.g.
-[Github Codespaces](https://github.com/features/codespaces) or the
-[VSCode Containers](https://code.visualstudio.com/docs/remote/containers-tutorial)
-extension.
 
 #### CUDA support
 
@@ -119,10 +73,8 @@ The [evaluation](meltingpot/utils/evaluation/evaluation.py) library can be used
 to evaluate [SavedModel](https://www.tensorflow.org/guide/saved_model)s
 trained on Melting Pot substrates.
 
-Evaluation results from the [Melting Pot 2.0 Tech Report](https://arxiv.org/abs/2211.13746)
-can be viewed in the [Evaluation Notebook](notebooks/evaluation_results.ipynb).
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deepmind/meltingpot/blob/main/notebooks/evaluation_results.ipynb)
+Instead a program for evaluating agents with the data specified in the Paper accompanying this repo
+has been implemented: [Eval_SIPPO](examples/pettingzoo/Eval_SIPPO.py)
 
 ### Interacting with the substrates
 
@@ -142,7 +94,7 @@ variants, which you select with the `--level_name` flag.
 
 ### Training agents
 
-We provide two example scripts: one using
+meltingpot provides two example scripts: one using
 [RLlib](https://github.com/ray-project/ray), and another using
 [PettingZoo](https://github.com/Farama-Foundation/PettingZoo) with
 [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) (SB3). Note
@@ -150,24 +102,8 @@ that Melting Pot is agnostic to how you train your agents, and as such, these
 scripts are not meant to be a suggestion on how to achieve good scores in the
 task suite.
 
-#### RLlib
-
-This example uses RLlib to train agents in
-self-play on a Melting Pot substrate.
-
-First you will need to install the dependencies needed by the examples:
-
-```shell
-cd <meltingpot_root>
-pip install -r examples/requirements.txt
-```
-
-Then you can run the training experiment using:
-
-```shell
-cd examples/rllib
-python self_play_train.py
-```
+For the approach of the accompanying thesis, a specific script has been implemented,
+based on the Pettingzoo example, where it can also be found.
 
 #### PettingZoo and Stable-Baselines3
 
@@ -181,8 +117,9 @@ can be found [here](examples/pettingzoo/utils.py).
 cd <meltingpot_root>
 pip install -r examples/requirements.txt
 cd examples/pettingzoo
-python sb3_train.py
+python sb3_train_SI.py
 ```
+adjustments for running different trainings, are described in detail in the comments.
 
 ## Documentation
 
