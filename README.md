@@ -74,7 +74,7 @@ to evaluate [SavedModel](https://www.tensorflow.org/guide/saved_model)s
 trained on Melting Pot substrates.
 
 Instead a program for evaluating agents with the data specified in the Paper accompanying this repo
-has been implemented: [Eval_SIPPO](examples/Pettingzoo/Eval_SIPPO)
+has been implemented: [Eval_SIPPO](examples/pettingzoo/Eval_SIPPO)
 
 ### Interacting with the substrates
 
