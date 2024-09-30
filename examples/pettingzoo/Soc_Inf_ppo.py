@@ -117,6 +117,7 @@ class Soc_Inf_ppo(PPO):
       seed: Optional[int] = None,
       device: Union[th.device, str] = "auto",
       _init_setup_model: bool = True,
+      inf_rew=True,
   ):
     super().__init__(
         policy,
@@ -153,7 +154,10 @@ class Soc_Inf_ppo(PPO):
     self.prev_acts = th.zeros(num_agents)
     self.prev_episode_starts = np.ones(num_agents)
     self.rew_instances = 0
-    self.inf_threshold = inf_threshold * self.num_agents
+    if inf_rew:
+      self.inf_threshold = inf_threshold * self.num_agents
+    else:
+      self.inf_threshold = math.inf
 
     if _init_setup_model:
       self._setup_model()
@@ -664,7 +668,7 @@ class Soc_Inf_ppo(PPO):
       if "env" in data:
         env = data["env"]
 
-    #if "inf_threshold" in data:
+    # if "inf_threshold" in data:
     #  data["inf_threshold"] = 0
 
     model = cls(

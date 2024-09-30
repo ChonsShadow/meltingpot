@@ -146,6 +146,9 @@ class ColabCookingCNN(torch_layers.BaseFeaturesExtractor):
 
 def main():
   # Config
+
+  # name of the desired env (can be found in
+  # meltinpot/meltingpot/configs/substrates/init.py)
   env_name = "commons_harvest__closed"
   env_config = substrate.get_config(env_name)
   env = utils.parallel_env(env_config)
@@ -172,7 +175,9 @@ def main():
   target_kl = 0.01
   grad_clip = 40
   verbose = 3
-  model_path = None # Replace this with a saved model
+  model_path = (
+      None  # Replace this with a saved model, if it needs more training
+  )
 
   env = utils.parallel_env(
       max_cycles=rollout_len,
@@ -212,6 +217,8 @@ def main():
 
   policy_kwargs = dict(
       num_frames=num_frames,
+      # CustomCNN for most envs. ColabCookingCNN
+      # for envs with smaller obs_spaces, like colaborative_cooking
       features_extractor_class=CustomCNN,
       features_extractor_kwargs=dict(
           features_dim=features_dim,
@@ -222,7 +229,8 @@ def main():
       mixed=True,
   )
 
-  tensorboard_log = "./results/sb3/harvest_closed_SIPPO"
+  # Name of directory where logs and model will be saved
+  tensorboard_log = "./results/sb3/harvest_open_ppo_paramsharing"
 
   model = Soc_Inf_ppo(
       Soc_Inf_Policy,
@@ -240,6 +248,8 @@ def main():
       policy_kwargs=policy_kwargs,
       tensorboard_log=tensorboard_log,
       verbose=verbose,
+      inf_rew=True,  # change to False, to switch off inf_reward
+      inf_threshold=0,  # adjust to influence the starting point of training
   )
   if model_path is not None:
     model = Soc_Inf_ppo.load(model_path, env=env)
