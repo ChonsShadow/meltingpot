@@ -971,10 +971,6 @@ class Soc_Inf_Buffer(RolloutBuffer):
   def add_inf_rew(self, inf_rews):
     rews = self.rewards[self.pos - 1]
     rews = np.add(rews, inf_rews)
-
-    # normalize rewards: NOTE: we assume that inf_rews are normalized, because
-    # used to calculate them are all normalized
-    rews = rews / 2
     self.rewards[self.pos - 1] = rews
 
 

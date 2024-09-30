@@ -298,7 +298,7 @@ class Soc_Inf_ppo(PPO):
         self.rew_instances += num_rews
 
         if self.rew_instances >= self.inf_threshold or self.num_timesteps >= (
-            self._total_timesteps * 0.75
+            self._total_timesteps * 0.5
         ):
           self.policy.inf_threshold_is_reached()
 
@@ -526,7 +526,7 @@ class Soc_Inf_ppo(PPO):
       total_timesteps: int,
       callback: MaybeCallback = None,
       log_interval: int = 1,
-      tb_log_name: str = "SocInfPPO_no_inf",
+      tb_log_name: str = "SocInfPPO_full_inf",
       reset_num_timesteps: bool = True,
       progress_bar: bool = False,
   ):
