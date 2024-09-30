@@ -13,8 +13,8 @@
 
 ### `pip` install
 
-[Melting Pot ist Verfügbar über PyPI](https://pypi.python.org/pypi/dm-meltingpot)
-und kann mittels des folgenden Befehls ausgeführt werden:
+[Melting Pot is available on PyPI](https://pypi.python.org/pypi/dm-meltingpot)
+and can be installed using the following command:
 
 ```shell
 pip install dm-meltingpot
@@ -28,7 +28,7 @@ for details).
 
 ### Manual install
 
-If you want to work on the Melting Pot source code, you can perform an editable
+If you want to work on the Melting Pot source code or inspect it more closely, you can perform an editable
 installation as follows:
 
 1.  Clone Melting Pot:
